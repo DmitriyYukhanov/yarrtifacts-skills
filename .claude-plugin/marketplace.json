@@ -1,0 +1,12 @@
+{
+  "name": "yarrtifacts",
+  "description": "Official yarrtifacts.com agent integrations: publish and update shareable artifact pages from your coding agent.",
+  "owner": { "name": "Dmitry Yukhanov" },
+  "plugins": [
+    {
+      "name": "yarrtifacts",
+      "source": "./",
+      "description": "Publish local folders and files as shareable web pages on yarrtifacts.com straight from your agent — get a link back, update it in place later."
+    }
+  ]
+}
