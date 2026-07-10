@@ -10,6 +10,7 @@
 import { readdirSync, statSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
 import { uploadFiles, validateArgs, UploadError } from "./upload-core.mjs";
+import { resolveAuth } from "./config.mjs";
 
 // Mirrors the server's junk filter in src/shared/junk.ts (kept in sync by
 // test/integration/agent-skill-contract.test.ts). SEGMENTS match any path segment (a file OR
@@ -58,7 +59,7 @@ function walk(root) {
 const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>]";
 
 function parseArgs(argv) {
-  const a = { api: "https://yarrtifacts.com" };
+  const a = {}; // a.api stays undefined unless --api is passed, so resolveAuth can fall back to the saved origin
   const rest = [];
   const val = (v) => { const x = argv[++i]; if (x === undefined) throw new UploadError("Missing value for " + v + "\n" + USAGE); return x; };
   let i = 0;
@@ -81,14 +82,15 @@ async function main() {
   try {
     const a = parseArgs(process.argv.slice(2));
     if (!a.dir) throw new UploadError(USAGE);
-    const token = process.env.YARRTIFACTS_TOKEN;
-    if (!token) throw new UploadError("YARRTIFACTS_TOKEN is not set. Create a token in the dashboard (API tokens tab), then export it in this environment.");
+    // Token + origin, coherently (env token → prod; config token → its saved origin; --api wins).
+    const { token, apiOrigin } = resolveAuth(a.api);
+    if (!token) throw new UploadError("Not connected. Run `node login.mjs` to connect your account, or set YARRTIFACTS_TOKEN.");
     validateArgs(a);
     const st = statSync(a.dir);
     const files = st.isDirectory()
       ? walk(a.dir)
       : [{ relativePath: basename(a.dir), size: st.size, readBody: () => readFileSync(a.dir) }];
-    const out = await uploadFiles({ apiOrigin: a.api, token, files, title: a.title, slug: a.slug, replace: a.replace, abandon: a.abandon }, fetch);
+    const out = await uploadFiles({ apiOrigin, token, files, title: a.title, slug: a.slug, replace: a.replace, abandon: a.abandon }, fetch);
     if (!out.published) console.error("Note: this artifact is unpublished, so the link is dormant. Publish it in the dashboard to make it live.");
     // artifactId first (agents remember it for --replace), then the contract: URL = bare last line.
     console.log("artifactId: " + out.artifactId);

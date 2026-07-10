@@ -1,8 +1,36 @@
 # yarrtifacts.com upload API
 
-Base: `https://yarrtifacts.com`. Every request carries `Authorization: Bearer <token>` — a
-personal access token (`yarr_pat_…`) created in the dashboard's **API tokens** tab. Tokens can
-call exactly the four routes below; everything else answers `403 {"error":"token scope"}`.
+Base: `https://yarrtifacts.com`. Uploads carry `Authorization: Bearer <token>` — a personal access
+token (`yarr_pat_…`). Get one either from the **API tokens** tab, or via the `login` pairing flow
+below (which mints the same kind of token). Tokens can call exactly the four upload routes; anything
+else answers `403 {"error":"token scope"}` (except the read-only `GET /api/tokens/whoami`).
+
+## Login (device pairing)
+
+Instead of pasting a token, the CLI can pair with the browser (no cookies needed on these routes):
+
+```
+POST /api/pairings/start        { "name": "my laptop" }   (optional)
+→ 200 { "deviceCode": "yarr_dc_…", "userCode": "WXYZ-2345",
+        "verificationUri": "https://yarrtifacts.com/link",
+        "verificationUriComplete": "https://yarrtifacts.com/link?code=WXYZ-2345",
+        "expiresIn": 600, "interval": 5 }
+```
+
+Show/open `verificationUriComplete`; the owner (signed into the dashboard) compares `userCode` and
+clicks Allow. Then poll:
+
+```
+POST /api/pairings/poll         { "deviceCode": "yarr_dc_…" }
+→ 200 { "status": "pending" | "slow_down" | "denied" | "expired" | "limit"
+        | "approved", "token": "yarr_pat_…", "tokenName": "my laptop" }
+```
+
+Poll no faster than `interval` seconds (a faster poll returns `slow_down`). The **first** poll after
+approval returns the token exactly once, then the pairing is gone. `login status` calls
+`GET /api/tokens/whoami` (200 = the token still resolves, 401 = revoked).
+
+## Upload
 
 ## 1. Init
 

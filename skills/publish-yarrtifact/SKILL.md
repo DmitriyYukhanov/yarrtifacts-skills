@@ -1,11 +1,11 @@
 ---
 name: publish-yarrtifact
-description: Publish a local folder or file as a shareable web page on yarrtifacts.com, or update an already published one so its link stays the same. Use when asked to publish, share, host, or upload an artifact, page, report, or HTML/Markdown bundle and return a link — or to push a new version of one published earlier. Requires the YARRTIFACTS_TOKEN environment variable.
+description: Publish a local folder or file as a shareable web page on yarrtifacts.com, or update an already published one so its link stays the same. Use when asked to publish, share, host, or upload an artifact, page, report, or HTML/Markdown bundle and return a link — or to push a new version of one published earlier. First-time use runs `login` to connect the account in the browser; also use when asked to log in, connect, or authenticate with yarrtifacts.
 license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -13,11 +13,23 @@ metadata:
 Turn a local folder (multi-file HTML bundle, a single `.html`, a `.md` that renders to a styled
 page, or any browser-viewable file) into a public share link. One command, prints the URL.
 
-## Setup (once)
+## Setup (once): connect the account
 
-1. The user creates a token in the dashboard: https://yarrtifacts.com → **API tokens** → Create token.
-2. The token must be available as the `YARRTIFACTS_TOKEN` environment variable. If it is missing,
-   ask the user to create one and set it — never ask them to paste the token into the chat.
+Run `login`. It opens a page in the browser where the user clicks Allow, then it saves a token
+locally, so no one has to create or paste one by hand.
+
+```bash
+node "<path-to-this-skill>/scripts/login.mjs"
+```
+
+- It prints a link and a short code, and tries to open the link in the browser. The user signs in
+  (if needed), checks the code matches, and clicks **Allow**.
+- The token is saved to `~/.config/yarrtifacts/config.json` and read from there on every upload. It
+  never passes through the chat — do not ask the user to paste a token.
+- `node login.mjs status` checks whether the saved token still works; `node login.mjs logout` forgets it.
+
+**Fallback (CI / no browser):** set `YARRTIFACTS_TOKEN` to a token created in the dashboard
+(**API tokens** → Create token). The env var takes precedence over the saved config.
 
 ## Publish
 
@@ -50,7 +62,7 @@ user as-is. If a create failed partway, stderr also names the leftover draft's i
 
 | Status | Meaning |
 |---|---|
-| 401 | Token invalid or revoked. Ask the user for a fresh one from the dashboard. |
+| 401 | Token invalid or revoked. Run `login` again to reconnect (or set a fresh `YARRTIFACTS_TOKEN`). |
 | 403 "token scope" | The token only uploads or replaces artifacts. Anything else needs the dashboard. |
 | 409 "slug taken" | Pick another `--slug`, or omit it. |
 | 413 | A file is over 95 MB, the bundle is over 200 MB, or a file grew after upload started. |
