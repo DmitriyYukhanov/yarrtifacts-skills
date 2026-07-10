@@ -45,6 +45,28 @@ async function jsonOrThrow(res) {
   return body || {};
 }
 
+/** True for a genuine connectivity failure (offline / DNS / reset — Node's undici surfaces it as a
+ *  bare "TypeError: fetch failed" with a `.cause`), so we don't relabel an unrelated throw (e.g. a
+ *  malformed URL from a bad --api) as a network problem. */
+export function isTransportError(e) {
+  if (e && e.cause !== undefined) return true;
+  return /fetch failed|network|socket|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|dns/i.test(String((e && e.message) || e));
+}
+
+/** fetch + jsonOrThrow, but a TRANSPORT failure becomes a friendly "retry" UploadError instead of an
+ *  opaque TypeError. A NON-transport throw (bad URL, etc.) surfaces its real message, not masked as
+ *  network. HTTP errors still flow through jsonOrThrow with the server's message. */
+async function request(fetchImpl, url, init) {
+  let res;
+  try {
+    res = await fetchImpl(url, init);
+  } catch (e) {
+    if (isTransportError(e)) throw new UploadError("Network error: couldn't reach the server. Check your connection and try again.");
+    throw new UploadError(String((e && e.message) || e));
+  }
+  return jsonOrThrow(res);
+}
+
 /**
  * Upload `files` ([{relativePath, size, body|readBody}]) as one artifact.
  * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon? } — `replace`/`abandon` are
@@ -65,9 +87,9 @@ export async function uploadFiles(opts, fetchImpl) {
 
   let artifactId, versionId, slugOut;
   if (replace) {
-    const j = await jsonOrThrow(await fetchImpl(apiOrigin + "/api/artifacts/" + encodeURIComponent(replace) + "/replace", {
+    const j = await request(fetchImpl, apiOrigin + "/api/artifacts/" + encodeURIComponent(replace) + "/replace", {
       method: "POST", headers: jsonHeaders, body: JSON.stringify({ manifest }),
-    }));
+    });
     artifactId = replace;
     versionId = j.versionId;
     slugOut = j.slug;
@@ -76,9 +98,9 @@ export async function uploadFiles(opts, fetchImpl) {
     if (title) body.title = title;
     if (slug) body.slug = slug;
     if (abandon) body.abandon = abandon; // reclaim the caller's own failed prior draft (server-side owner+status-scoped delete)
-    const j = await jsonOrThrow(await fetchImpl(apiOrigin + "/api/artifacts/init", {
+    const j = await request(fetchImpl, apiOrigin + "/api/artifacts/init", {
       method: "POST", headers: jsonHeaders, body: JSON.stringify(body),
-    }));
+    });
     artifactId = j.artifactId;
     versionId = j.versionId;
     slugOut = j.slug;
@@ -103,23 +125,23 @@ export async function uploadFiles(opts, fetchImpl) {
         throw new UploadError("Could not read " + f.relativePath + ": " + String((e && e.message) || e));
       }
       try {
-        await jsonOrThrow(await fetchImpl(
+        await request(fetchImpl,
           apiOrigin + "/api/artifacts/" + artifactId + "/versions/" + versionId + "/files/" + encodePath(f.relativePath),
           { method: "PUT", headers: { ...auth, "content-length": String(bodyByteLength(body)) }, body },
-        ));
+        );
       } catch (e) {
         aborted = true;
-        throw e; // an HTTP error is already an UploadError; a transport reject propagates verbatim
+        throw e; // already an UploadError (HTTP or transport), rethrown to stop the pool
       }
     }
   }
   try {
     await Promise.all(Array.from({ length: Math.min(PUT_CONCURRENCY, files.length) }, putWorker));
 
-    const fin = await jsonOrThrow(await fetchImpl(
+    const fin = await request(fetchImpl,
       apiOrigin + "/api/artifacts/" + artifactId + "/versions/" + versionId + "/finalize",
       { method: "POST", headers: auth },
-    ));
+    );
     // Servers from v0.18 return the fully-qualified `url`; older ones only the bare subdomain host.
     // `published: false` = the version stored but the artifact is unpublished, so the link is dormant.
     return {
