@@ -9,7 +9,7 @@
  */
 import { readdirSync, statSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
-import { uploadFiles, validateArgs, UploadError } from "./upload-core.mjs";
+import { uploadFiles, editArtifact, validateArgs, UploadError } from "./upload-core.mjs";
 import { resolveAuth } from "./config.mjs";
 
 // Mirrors the server's junk filter in src/shared/junk.ts (kept in sync by
@@ -56,7 +56,7 @@ function walk(root) {
   return out;
 }
 
-const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>]";
+const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>]\n   or: node upload.mjs --edit <artifactId> [--title <t>] [--slug <s>] [--api <origin>]";
 
 function parseArgs(argv) {
   const a = {}; // a.api stays undefined unless --api is passed, so resolveAuth can fall back to the saved origin
@@ -70,6 +70,7 @@ function parseArgs(argv) {
     else if (v === "--slug") a.slug = val(v);
     else if (v === "--replace") a.replace = val(v);
     else if (v === "--abandon") a.abandon = val(v);
+    else if (v === "--edit") a.edit = val(v);
     else if (v === "--api") a.api = val(v);
     else if (v.startsWith("--")) throw new UploadError("Unknown flag: " + v + "\n" + USAGE);
     else rest.push(v);
@@ -81,6 +82,20 @@ function parseArgs(argv) {
 async function main() {
   try {
     const a = parseArgs(process.argv.slice(2));
+    // --edit (#60): rename/re-slug an already-published artifact, no re-upload, no folder walk.
+    if (a.edit) {
+      const { token, apiOrigin } = resolveAuth(a.api);
+      if (!token) throw new UploadError("Not connected. Run `node login.mjs` to connect your account, or set YARRTIFACTS_TOKEN.");
+      validateArgs(a);
+      const out = await editArtifact({ apiOrigin, token, artifactId: a.edit, title: a.title, slug: a.slug }, fetch);
+      if (out.url && out.published === false) console.error("Note: this artifact is unpublished, so the new link is dormant. Publish it in the dashboard to make it live.");
+      // artifactId first, then: a title-only edit has no URL (last line stays "artifactId: …"); a
+      // slug change prints the new URL last, matching the upload path's "URL = bare last line" contract.
+      console.log("artifactId: " + out.artifactId);
+      if (out.title !== undefined) console.error("Renamed.");
+      if (out.url) console.log(out.url);
+      return;
+    }
     if (!a.dir) throw new UploadError(USAGE);
     // Token + origin, coherently (env token → prod; config token → its saved origin; --api wins).
     const { token, apiOrigin } = resolveAuth(a.api);
@@ -96,6 +111,9 @@ async function main() {
     console.log("artifactId: " + out.artifactId);
     console.log(out.url);
   } catch (e) {
+    if (e && e.partial && e.partial.title !== undefined) {
+      console.error(e.partial.title === null ? "Note: the title was already cleared." : "Note: the title was already changed to \"" + e.partial.title + "\".");
+    }
     console.error(e instanceof UploadError ? e.message : String(e));
     if (e && e.artifactId) {
       console.error("A draft artifact was left behind (id " + e.artifactId + "). Add --abandon " + e.artifactId + " to your retry to reclaim it, or delete it in the dashboard.");

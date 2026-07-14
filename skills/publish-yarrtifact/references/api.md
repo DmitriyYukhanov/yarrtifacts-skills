@@ -2,8 +2,9 @@
 
 Base: `https://yarrtifacts.com`. Uploads carry `Authorization: Bearer <token>` — a personal access
 token (`yarr_pat_…`). Get one either from the **API tokens** tab, or via the `login` pairing flow
-below (which mints the same kind of token). Tokens can call exactly the four upload routes; anything
-else answers `403 {"error":"token scope"}` (except the read-only `GET /api/tokens/whoami`).
+below (which mints the same kind of token). Tokens can call the routes documented below (upload,
+replace, rename, slug-edit); anything else answers `403 {"error":"token scope"}` (except the
+read-only `GET /api/tokens/whoami`).
 
 ## Login (device pairing)
 
@@ -80,7 +81,34 @@ Content-Type: application/json
 ```
 
 → `200 { "versionId": "…", "slug": "…" }` — then repeat steps 2 and 3 with the new `versionId`.
-`title`/`slug` are ignored here; rename and slug edits live in the dashboard.
+`title`/`slug` are ignored here; see step 5 below to rename or change the link.
+
+## 5. Edit (rename / change the link, no re-upload)
+
+```
+POST /api/artifacts/{artifactId}/rename
+Content-Type: application/json
+
+{ "title": "New title" }
+```
+
+→ `200 { "title": "…" }`
+
+```
+POST /api/artifacts/{artifactId}/slug
+Content-Type: application/json
+
+{ "slug": "new-slug" }
+```
+
+→ `200 { "slug": "…", "url": "https://<newSlug>.arrtifacts.com/", "published": true }`
+
+`published: false` means the link is dormant (the artifact isn't published) — check it before
+telling the user the new link is live.
+
+Call either or both — they're independent requests, not one atomic operation. Changing the slug
+moves the public link immediately; the old one 404s and can be claimed by another artifact after a
+short cooldown, so warn the user before changing a link they've already shared.
 
 ## Errors
 
@@ -90,9 +118,9 @@ absent). Show `message`, falling back to `error`, falling back to the HTTP statu
 | Status | error | Notes |
 |---|---|---|
 | 401 | `invalid token` | Unknown or revoked token. |
-| 403 | `token scope` | Route outside the four above. |
+| 403 | `token scope` | Route outside the ones documented above. |
 | 400 | `bad manifest` / `bad entry` / `duplicate path: …` / `unsupported type: …` / `unsafe path: …` / `invalid slug` / `file too large` / `bundle too large` | Manifest problems at init (size caps checked against declared sizes return 400 here). |
-| 409 | `slug taken` / `entry` / `still processing` / `version not writable` / `replace conflict` | Conflicts; `entry` = no clear entry point (add index.html). |
+| 409 | `slug taken` / `entry` / `still processing` / `version not writable` / `replace conflict` / `not editable` / `changed` / `recently used` / `unavailable` / `rename conflict` | Conflicts; `entry` = no clear entry point (add index.html); the last five are rename/slug-edit conflicts. |
 | 413 | `file too large` / `size mismatch` / `bundle too large` | Upload-time caps: a PUT body over 95 MB or beyond its declared size; a finalize whose stored bundle exceeds 200 MB. |
 | 422 | `incomplete` | Some files never arrived; re-upload and finalize again. |
 | 429 | `rate limited` | Per-owner/IP budget; honor `retry-after`. |

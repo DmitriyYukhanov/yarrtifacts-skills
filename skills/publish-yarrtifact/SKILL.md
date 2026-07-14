@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.2.1"
+  version: "0.3.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -54,6 +54,21 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> --replace <artif
   version. (Lost it? It's visible in the dashboard, not to the token.)
 - `--title` and `--slug` do not combine with `--replace`; the command rejects that.
 
+## Rename or change the link (no re-upload)
+
+```bash
+node "<path-to-this-skill>/scripts/upload.mjs" --edit <artifactId> [--title "New title"] [--slug new-slug]
+```
+
+- Pass `--title`, `--slug`, or both — at least one is required. Neither re-uploads content nor
+  touches the current version; it only edits the artifact's title and/or public link.
+- On success, `artifactId: <id>` prints first; a slug change then prints the new share URL as the
+  last line (a title-only edit has no URL to print). Give the new link to the user if the slug changed.
+- Changing the slug moves the public link immediately — the old one stops serving and may be
+  claimed by someone else after a short cooldown, so warn the user before changing a link they've
+  already shared.
+- `--edit` does not combine with `--replace`, `--abandon`, or a folder path.
+
 ## On failure
 
 The script prints the server's message to stderr and exits non-zero. Show that message to the
@@ -63,7 +78,7 @@ user as-is. If a create failed partway, stderr also names the leftover draft's i
 | Status | Meaning |
 |---|---|
 | 401 | Token invalid or revoked. Run `login` again to reconnect (or set a fresh `YARRTIFACTS_TOKEN`). |
-| 403 "token scope" | The token only uploads or replaces artifacts. Anything else needs the dashboard. |
+| 403 "token scope" | This token can only upload, replace, rename, or change the slug of artifacts it owns. Anything else needs the dashboard. |
 | 409 "slug taken" | Pick another `--slug`, or omit it. |
 | 413 | A file is over 95 MB, the bundle is over 200 MB, or a file grew after upload started. |
 | 429 | Rate limit. Wait a minute, retry once. |

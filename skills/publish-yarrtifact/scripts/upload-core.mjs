@@ -18,9 +18,30 @@ export function formatFailure(status, body) {
   return (body && (body.message || body.error)) || ("HTTP " + status);
 }
 
+// Single source of truth for "is there anything to edit", shared by validateArgs' CLI-args-shaped
+// check and editArtifact's own opts-shaped guard (their field names differ — CLI uses `edit`,
+// editArtifact's opts use `artifactId` — so this takes just the two values that actually matter,
+// not a whole args/opts object, keeping both callers' messages from drifting apart independently.
+function requireEditField(title, slug) {
+  // Presence check, not truthiness: --title "" is a real request (clear the title, mirroring the
+  // dashboard's own rename field), not "not provided" — a falsy check would silently drop it.
+  if (title === undefined && slug === undefined) {
+    throw new UploadError("Nothing to edit: pass --title and/or --slug with --edit.");
+  }
+}
+
 /** --title/--slug shape the CREATE call and --abandon reclaims a failed CREATE draft; the replace
- *  route ignores all three, so combining any with --replace would silently drop user intent. */
+ *  route ignores all three, so combining any with --replace would silently drop user intent.
+ *  --edit (#60) is a distinct metadata-only mode (no re-upload): checked FIRST and returns early,
+ *  so combining it with --replace gets --edit's own accurate message, not the create/replace one. */
 export function validateArgs(args) {
+  if (args.edit) {
+    if (args.replace || args.abandon || args.dir) {
+      throw new UploadError("--edit only combines with --title and/or --slug (it edits an existing artifact's metadata, no re-upload). Remove --replace, --abandon, or the folder path.");
+    }
+    requireEditField(args.title, args.slug);
+    return;
+  }
   if (args.replace && (args.title || args.slug || args.abandon)) {
     throw new UploadError("--title, --slug and --abandon only apply when creating a new artifact. Remove them, or drop --replace.");
   }
@@ -67,6 +88,20 @@ async function request(fetchImpl, url, init) {
   return jsonOrThrow(res);
 }
 
+// Normalize a pasted API origin: strip trailing slashes so "https://x.com/" + "/api/…" doesn't
+// yield a //api pathname that matches no route (a very confusing 403). Shared by uploadFiles and
+// editArtifact so a future fix to this rule can't land in one and be forgotten in the other.
+function normalizeOrigin(origin) {
+  return String(origin || "").replace(/\/+$/, "");
+}
+
+// Bearer auth header, alone (PUT/finalize) or extended with the JSON content-type (init/replace/
+// rename/slug). Shared by uploadFiles and editArtifact for the same reason as normalizeOrigin.
+function authHeaders(token, withJson) {
+  const auth = { authorization: "Bearer " + token };
+  return withJson ? { ...auth, "content-type": "application/json" } : auth;
+}
+
 /**
  * Upload `files` ([{relativePath, size, body|readBody}]) as one artifact.
  * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon? } — `replace`/`abandon` are
@@ -76,13 +111,11 @@ async function request(fetchImpl, url, init) {
  */
 export async function uploadFiles(opts, fetchImpl) {
   const { token, files, title, slug, replace, abandon } = opts;
-  // Normalize the origin: people paste origins with a trailing slash, and "https://x.com/" +
-  // "/api/…" yields a //api pathname that matches no route (a very confusing 403).
-  const apiOrigin = String(opts.apiOrigin || "").replace(/\/+$/, "");
+  const apiOrigin = normalizeOrigin(opts.apiOrigin);
   validateArgs(opts);
   if (!files || !files.length) throw new UploadError("Nothing to upload: the folder has no files.");
-  const auth = { authorization: "Bearer " + token };
-  const jsonHeaders = { ...auth, "content-type": "application/json" };
+  const auth = authHeaders(token);
+  const jsonHeaders = authHeaders(token, true);
   const manifest = files.map((f) => ({ relativePath: f.relativePath, size: f.size }));
 
   let artifactId, versionId, slugOut;
@@ -161,4 +194,46 @@ export async function uploadFiles(opts, fetchImpl) {
     }
     throw e;
   }
+}
+
+/**
+ * Rename and/or change the slug of an already-published artifact — no re-upload (#60).
+ * opts: { apiOrigin, token, artifactId, title?, slug? }. Sequenced title-first, slug-second: if the
+ * slug call fails after the title already committed, the thrown error carries `.partial.title` so
+ * the caller can report the partial success instead of implying nothing happened.
+ * Returns { artifactId, title?, slug?, url?, published? } (url/published are set only when the
+ * slug changed; published:false means the new link is dormant — the artifact isn't live).
+ */
+export async function editArtifact(opts, fetchImpl) {
+  const { token, artifactId, title, slug } = opts;
+  // Self-validating, like uploadFiles' validateArgs(opts) call: any caller of the exported function
+  // (not just upload.mjs's CLI branch) gets this error instead of a silent artifactId-only no-op.
+  // Shares requireEditField with validateArgs' --edit branch so the two can't drift apart.
+  requireEditField(title, slug);
+  const apiOrigin = normalizeOrigin(opts.apiOrigin);
+  const jsonHeaders = authHeaders(token, true);
+  const out = { artifactId };
+
+  if (title !== undefined) {
+    const j = await request(fetchImpl, apiOrigin + "/api/artifacts/" + encodeURIComponent(artifactId) + "/rename", {
+      method: "POST", headers: jsonHeaders, body: JSON.stringify({ title }),
+    });
+    out.title = j.title;
+  }
+  if (slug !== undefined) {
+    try {
+      const j = await request(fetchImpl, apiOrigin + "/api/artifacts/" + encodeURIComponent(artifactId) + "/slug", {
+        method: "POST", headers: jsonHeaders, body: JSON.stringify({ slug }),
+      });
+      out.slug = j.slug;
+      out.url = j.url;
+      out.published = j.published;
+    } catch (e) {
+      if (out.title !== undefined && e && typeof e === "object") {
+        try { e.partial = { title: out.title }; } catch { /* frozen error object: nothing to attach to */ }
+      }
+      throw e;
+    }
+  }
+  return out;
 }
