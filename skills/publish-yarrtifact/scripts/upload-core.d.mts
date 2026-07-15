@@ -18,11 +18,22 @@ export type UploadFile = { relativePath: string; size: number } & (
 
 export interface UploadResult {
   url: string;
+  /** Fully-qualified; null only against a pre-#64 server that doesn't send one. */
+  pathUrl: string | null;
   slug: string;
   artifactId: string;
   versionId: string;
   /** false = the version stored but the artifact is unpublished, so the link is dormant. */
   published: boolean;
+  /** The resolved branded custom-domain link for THIS run, or null (#64). */
+  customDomainUrl: string | null;
+  /** Set when 2+ active domains exist with no valid stored default — a non-blocking hint, never a failure. */
+  domainPrompt: { candidates: string[] } | null;
+  /** What to persist to the local config via updateConfig(), or null if nothing changed. */
+  configPatch: DomainPreference | null;
+  /** Set only when an explicit --default-domain override was invalid or couldn't be validated — the
+   *  publish itself still succeeded. */
+  domainOverrideError?: string;
 }
 
 export interface EditResult {
@@ -32,19 +43,46 @@ export interface EditResult {
   slug?: string;
   /** Set only when the slug changed. */
   url?: string;
+  /** Set only when the slug changed; fully-qualified. */
+  pathUrl?: string | null;
   /** Set only when the slug changed. false = the new link is dormant (the artifact isn't live). */
   published?: boolean;
+  /** Present only when the slug changed or an explicit --default-domain was passed (#64). */
+  customDomainUrl?: string | null;
+  domainPrompt?: { candidates: string[] } | null;
+  configPatch?: DomainPreference | null;
+  domainOverrideError?: string;
 }
 
+/** Stored locally in config.json between runs (#64). "none" is an explicit opt-out, distinct from
+ *  "never resolved yet" (the field simply absent/undefined). */
+export type DomainPreference = { defaultDomain?: string; defaultDomainSnapshot?: string[] };
+
+export interface DomainSelection {
+  brandedHostname: string | null;
+  hint: { candidates: string[] } | null;
+}
+
+export function fetchActiveDomains(
+  opts: { apiOrigin: string; token: string },
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+): Promise<string[]>;
+export function resolveDomainSelection(activeHostnames: string[], stored: DomainPreference): DomainSelection;
+export function validateDefaultDomainChoice(choice: string, activeHostnames: string[]): string;
+
 export function formatFailure(status: number, body: { message?: string; error?: string } | null | undefined): string;
-export function validateArgs(args: { replace?: string; title?: string; slug?: string; abandon?: string; edit?: string; dir?: string }): void;
+export function validateArgs(args: { replace?: string; title?: string; slug?: string; abandon?: string; edit?: string; dir?: string; defaultDomain?: string }): void;
 export function encodePath(rel: string): string;
 export function bodyByteLength(body: string | Uint8Array): number;
 export function uploadFiles(
-  opts: { apiOrigin: string; token: string; files: UploadFile[]; title?: string; slug?: string; replace?: string; abandon?: string },
+  opts: { apiOrigin: string; token: string; files: UploadFile[]; title?: string; slug?: string; replace?: string; abandon?: string } & DomainPreference & { defaultDomainOverride?: string },
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
 ): Promise<UploadResult>;
 export function editArtifact(
-  opts: { apiOrigin: string; token: string; artifactId: string; title?: string; slug?: string },
+  opts: { apiOrigin: string; token: string; artifactId: string; title?: string; slug?: string } & DomainPreference & { defaultDomainOverride?: string },
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
 ): Promise<EditResult>;
+export function setDefaultDomain(
+  opts: { apiOrigin: string; token: string; defaultDomainOverride: string },
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+): Promise<{ defaultDomain: string; configPatch: DomainPreference }>;

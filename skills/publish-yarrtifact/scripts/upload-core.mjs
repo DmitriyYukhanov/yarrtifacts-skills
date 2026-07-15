@@ -20,26 +20,28 @@ export function formatFailure(status, body) {
 
 // Single source of truth for "is there anything to edit", shared by validateArgs' CLI-args-shaped
 // check and editArtifact's own opts-shaped guard (their field names differ — CLI uses `edit`,
-// editArtifact's opts use `artifactId` — so this takes just the two values that actually matter,
-// not a whole args/opts object, keeping both callers' messages from drifting apart independently.
-function requireEditField(title, slug) {
+// editArtifact's opts use `artifactId` — so this takes just the values that actually matter, not a
+// whole args/opts object, keeping both callers' messages from drifting apart independently.
+function requireEditField(title, slug, hasDomainOverride) {
   // Presence check, not truthiness: --title "" is a real request (clear the title, mirroring the
   // dashboard's own rename field), not "not provided" — a falsy check would silently drop it.
-  if (title === undefined && slug === undefined) {
-    throw new UploadError("Nothing to edit: pass --title and/or --slug with --edit.");
+  if (title === undefined && slug === undefined && !hasDomainOverride) {
+    throw new UploadError("Nothing to edit: pass --title, --slug, and/or --default-domain with --edit.");
   }
 }
 
 /** --title/--slug shape the CREATE call and --abandon reclaims a failed CREATE draft; the replace
  *  route ignores all three, so combining any with --replace would silently drop user intent.
  *  --edit (#60) is a distinct metadata-only mode (no re-upload): checked FIRST and returns early,
- *  so combining it with --replace gets --edit's own accurate message, not the create/replace one. */
+ *  so combining it with --replace gets --edit's own accurate message, not the create/replace one.
+ *  --default-domain (#64) alone (no --title/--slug) is also a valid --edit — it just resolves and
+ *  saves the default-domain preference against this artifact without touching its metadata. */
 export function validateArgs(args) {
   if (args.edit) {
     if (args.replace || args.abandon || args.dir) {
       throw new UploadError("--edit only combines with --title and/or --slug (it edits an existing artifact's metadata, no re-upload). Remove --replace, --abandon, or the folder path.");
     }
-    requireEditField(args.title, args.slug);
+    requireEditField(args.title, args.slug, args.defaultDomain !== undefined);
     return;
   }
   if (args.replace && (args.title || args.slug || args.abandon)) {
@@ -102,15 +104,128 @@ function authHeaders(token, withJson) {
   return withJson ? { ...auth, "content-type": "application/json" } : auth;
 }
 
+/** GET /api/domains via the token; returns lowercased, sorted hostnames with state==='active' only
+ *  (pending/failed/detaching domains aren't usable share links yet). Throws UploadError on a
+ *  transport or HTTP failure — callers decide whether that's fatal for their situation. */
+export async function fetchActiveDomains(opts, fetchImpl) {
+  const apiOrigin = normalizeOrigin(opts.apiOrigin);
+  const j = await request(fetchImpl, apiOrigin + "/api/domains", { method: "GET", headers: authHeaders(opts.token) });
+  const domains = Array.isArray(j.domains) ? j.domains : [];
+  return domains.filter((d) => d && d.state === "active").map((d) => String(d.hostname).toLowerCase()).sort();
+}
+
+/** Pure decision (#64): given the CURRENT active hostnames and the locally stored preference, decide
+ *  which branded hostname (if any) to use this run, and whether the CLI needs to ask the human.
+ *  Never throws. Rules, in order:
+ *   - 0 active -> no branded link, no hint (nothing to choose from).
+ *   - exactly 1 active -> ALWAYS that one, unconditionally — even overriding a stored "none" or a
+ *     different previous pick. Never prompts.
+ *   - 2+ active -> reuse the stored choice ONLY if the active set is UNCHANGED from the stored
+ *     snapshot (order/case-independent) and the choice is still valid ("none", or a hostname still
+ *     in the active set); otherwise a non-blocking hint listing the candidates (never a throw). */
+export function resolveDomainSelection(activeHostnames, stored) {
+  const active = [...activeHostnames].map((h) => String(h).toLowerCase()).sort();
+  if (active.length === 0) return { brandedHostname: null, hint: null };
+  if (active.length === 1) return { brandedHostname: active[0], hint: null };
+
+  const storedSnapshot = stored && Array.isArray(stored.defaultDomainSnapshot)
+    ? [...stored.defaultDomainSnapshot].map((h) => String(h).toLowerCase()).sort()
+    : null;
+  const snapshotMatches = storedSnapshot !== null
+    && storedSnapshot.length === active.length
+    && storedSnapshot.every((h, i) => h === active[i]);
+
+  if (snapshotMatches) {
+    const def = stored && typeof stored.defaultDomain === "string" ? stored.defaultDomain.toLowerCase() : undefined;
+    if (def === "none") return { brandedHostname: null, hint: null };
+    if (def !== undefined && active.includes(def)) return { brandedHostname: def, hint: null };
+  }
+  return { brandedHostname: null, hint: { candidates: active } };
+}
+
+/** Validates a --default-domain value against the LIVE active set. "none" (any case) is always
+ *  valid. Throws UploadError, listing the active alternatives, on anything else that isn't an active
+ *  hostname. Returns the normalized value: "none" or a lowercased hostname. */
+export function validateDefaultDomainChoice(choice, activeHostnames) {
+  if (typeof choice !== "string" || !choice) throw new UploadError('--default-domain needs a hostname or "none".');
+  if (choice.toLowerCase() === "none") return "none";
+  const active = [...activeHostnames].map((h) => String(h).toLowerCase());
+  const norm = choice.toLowerCase();
+  if (!active.includes(norm)) {
+    throw new UploadError(active.length
+      ? `"${choice}" is not one of your active custom domains: ${active.join(", ")}. Pass "none" to skip a branded link.`
+      : "You have no active custom domains to choose from yet.");
+  }
+  return norm;
+}
+
+/** Shared validate-and-build-patch step for an explicit --default-domain value (#64). Always fetches
+ *  a FRESH active list (never trusts a stale snapshot) so a typo or a since-detached hostname is
+ *  caught. Throws UploadError on any problem — callers decide whether that's fatal for them. */
+async function overridePatch(apiOrigin, token, defaultDomainOverride, slug, fetchImpl) {
+  const active = await fetchActiveDomains({ apiOrigin, token }, fetchImpl);
+  const normalized = validateDefaultDomainChoice(defaultDomainOverride, active);
+  // `slug` is undefined for the standalone call and for an edit that isn't ALSO changing the slug
+  // (title-only, or --default-domain alone) — there's no PAT-reachable route to read an artifact's
+  // EXISTING slug, so customDomainUrl can't be built yet even though configPatch below still saves
+  // the preference. The branded link shows starting from the artifact's next publish/replace/slug edit.
+  const customDomainUrl = normalized !== "none" && slug ? `https://${normalized}/${slug}/` : null;
+  return { customDomainUrl, domainPrompt: null, configPatch: { defaultDomain: normalized, defaultDomainSnapshot: active } };
+}
+
+/** Standalone `--default-domain <hostname|none>` (no publish/--edit, #64): validate against a fresh
+ *  domain list and hard-fail (throw) on any problem — validation IS the point of this call, so
+ *  config is left untouched on failure. */
+export async function setDefaultDomain(opts, fetchImpl) {
+  const apiOrigin = normalizeOrigin(opts.apiOrigin);
+  const patch = await overridePatch(apiOrigin, opts.token, opts.defaultDomainOverride, undefined, fetchImpl);
+  return { defaultDomain: patch.configPatch.defaultDomain, configPatch: patch.configPatch };
+}
+
+/** Shared by uploadFiles (after finalize) and editArtifact (after a slug change or an explicit
+ *  --default-domain, #64): resolve which branded URL, if any, to show this run.
+ *   - defaultDomainOverride set: validated, but a failure is CAUGHT here (not thrown) — the publish
+ *     or edit already succeeded, so a bad flag value must not look like the whole operation failed.
+ *     Surfaces as `domainOverrideError` instead.
+ *   - otherwise (passive per-publish lookup): a fetchActiveDomains failure is swallowed silently — a
+ *     domains-list hiccup must never fail an already-finalized artifact. */
+async function resolveDomainsForRun(opts, slug, fetchImpl) {
+  const { apiOrigin, token, defaultDomain, defaultDomainSnapshot, defaultDomainOverride } = opts;
+  if (defaultDomainOverride !== undefined) {
+    try {
+      return await overridePatch(apiOrigin, token, defaultDomainOverride, slug, fetchImpl);
+    } catch (e) {
+      return { customDomainUrl: null, domainPrompt: null, configPatch: null, domainOverrideError: (e && e.message) || String(e) };
+    }
+  }
+  let active;
+  try {
+    active = await fetchActiveDomains({ apiOrigin, token }, fetchImpl);
+  } catch {
+    return { customDomainUrl: null, domainPrompt: null, configPatch: null };
+  }
+  const { brandedHostname, hint } = resolveDomainSelection(active, { defaultDomain, defaultDomainSnapshot });
+  if (hint) return { customDomainUrl: null, domainPrompt: hint, configPatch: null };
+  if (!brandedHostname) return { customDomainUrl: null, domainPrompt: null, configPatch: null };
+  return {
+    customDomainUrl: slug ? `https://${brandedHostname}/${slug}/` : null,
+    domainPrompt: null,
+    configPatch: { defaultDomain: brandedHostname, defaultDomainSnapshot: active },
+  };
+}
+
 /**
  * Upload `files` ([{relativePath, size, body|readBody}]) as one artifact.
- * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon? } — `replace`/`abandon` are
- * existing artifact ids (replace = new version of it; abandon = reclaim a failed create draft).
- * Returns { url, slug, artifactId, versionId, published }; throws UploadError with the server's
- * message (on a create-path failure the thrown error carries `.artifactId` of the leftover draft).
+ * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon?, defaultDomain?,
+ * defaultDomainSnapshot?, defaultDomainOverride? } — `replace`/`abandon` are existing artifact ids
+ * (replace = new version of it; abandon = reclaim a failed create draft); the `defaultDomain*` trio
+ * drives branded-link resolution (#64), sourced from the local config file / --default-domain flag.
+ * Returns { url, pathUrl, slug, artifactId, versionId, published, customDomainUrl, domainPrompt,
+ * configPatch, domainOverrideError? }; throws UploadError with the server's message (on a
+ * create-path failure the thrown error carries `.artifactId` of the leftover draft).
  */
 export async function uploadFiles(opts, fetchImpl) {
-  const { token, files, title, slug, replace, abandon } = opts;
+  const { token, files, title, slug, replace, abandon, defaultDomain, defaultDomainSnapshot, defaultDomainOverride } = opts;
   const apiOrigin = normalizeOrigin(opts.apiOrigin);
   validateArgs(opts);
   if (!files || !files.length) throw new UploadError("Nothing to upload: the folder has no files.");
@@ -177,13 +292,21 @@ export async function uploadFiles(opts, fetchImpl) {
     );
     // Servers from v0.18 return the fully-qualified `url`; older ones only the bare subdomain host.
     // `published: false` = the version stored but the artifact is unpublished, so the link is dormant.
-    return {
+    const result = {
       url: fin.url || ("https://" + fin.subdomainUrl + "/"),
+      pathUrl: fin.pathUrl || null, // null-safe: an older server (pre-#64) doesn't send an absolute one
       slug: fin.slug || slugOut,
       artifactId,
       versionId,
       published: fin.published !== false,
     };
+    // resolveDomainsForRun's every return path already sets customDomainUrl/domainPrompt/configPatch
+    // (see its own doc comment), so there's no default to spread in here first.
+    const domainResolution = await resolveDomainsForRun(
+      { apiOrigin, token, defaultDomain, defaultDomainSnapshot, defaultDomainOverride },
+      result.slug, fetchImpl,
+    );
+    return { ...result, ...domainResolution };
   } catch (e) {
     // A failure after init leaves a draft behind (create path). Attach the id to WHATEVER was
     // thrown — including a transport-level TypeError from the finalize fetch, which is exactly when
@@ -197,19 +320,29 @@ export async function uploadFiles(opts, fetchImpl) {
 }
 
 /**
- * Rename and/or change the slug of an already-published artifact — no re-upload (#60).
- * opts: { apiOrigin, token, artifactId, title?, slug? }. Sequenced title-first, slug-second: if the
- * slug call fails after the title already committed, the thrown error carries `.partial.title` so
- * the caller can report the partial success instead of implying nothing happened.
- * Returns { artifactId, title?, slug?, url?, published? } (url/published are set only when the
- * slug changed; published:false means the new link is dormant — the artifact isn't live).
+ * Rename and/or change the slug of an already-published artifact, and/or set its --default-domain
+ * preference — no re-upload (#60, #64).
+ * opts: { apiOrigin, token, artifactId, title?, slug?, defaultDomain?, defaultDomainSnapshot?,
+ * defaultDomainOverride? }. At least one of title/slug/defaultDomainOverride is required. Sequenced
+ * title-first, slug-second: if the slug call fails after the title already committed, the thrown
+ * error carries `.partial.title` so the caller can report the partial success instead of implying
+ * nothing happened.
+ * Returns { artifactId, title?, slug?, url?, pathUrl?, published?, customDomainUrl?, domainPrompt?,
+ * configPatch?, domainOverrideError? } — the domain-resolution fields (#64) are only present when
+ * the slug changed or an explicit --default-domain was passed; a title-only edit with no domain
+ * override returns exactly {artifactId, title} as before. KNOWN GAP: an edit that resolves a domain
+ * WITHOUT also changing the slug (a title-only edit + --default-domain, or --default-domain alone)
+ * has no route to read the artifact's EXISTING slug, so `configPatch` still saves the preference but
+ * `customDomainUrl` stays null this run — the branded link only appears starting from the artifact's
+ * next publish/replace or slug edit. Closing that gap needs a new PAT-reachable single-artifact read
+ * route; out of scope here. published:false means the new link is dormant — not live yet.
  */
 export async function editArtifact(opts, fetchImpl) {
-  const { token, artifactId, title, slug } = opts;
+  const { token, artifactId, title, slug, defaultDomain, defaultDomainSnapshot, defaultDomainOverride } = opts;
   // Self-validating, like uploadFiles' validateArgs(opts) call: any caller of the exported function
   // (not just upload.mjs's CLI branch) gets this error instead of a silent artifactId-only no-op.
   // Shares requireEditField with validateArgs' --edit branch so the two can't drift apart.
-  requireEditField(title, slug);
+  requireEditField(title, slug, defaultDomainOverride !== undefined);
   const apiOrigin = normalizeOrigin(opts.apiOrigin);
   const jsonHeaders = authHeaders(token, true);
   const out = { artifactId };
@@ -227,6 +360,7 @@ export async function editArtifact(opts, fetchImpl) {
       });
       out.slug = j.slug;
       out.url = j.url;
+      out.pathUrl = j.pathUrl || null;
       out.published = j.published;
     } catch (e) {
       if (out.title !== undefined && e && typeof e === "object") {
@@ -234,6 +368,13 @@ export async function editArtifact(opts, fetchImpl) {
       }
       throw e;
     }
+  }
+  if (slug !== undefined || defaultDomainOverride !== undefined) {
+    const domainResolution = await resolveDomainsForRun(
+      { apiOrigin, token, defaultDomain, defaultDomainSnapshot, defaultDomainOverride },
+      out.slug, fetchImpl,
+    );
+    Object.assign(out, domainResolution);
   }
   return out;
 }

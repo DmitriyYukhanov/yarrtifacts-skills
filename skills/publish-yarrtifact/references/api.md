@@ -3,8 +3,8 @@
 Base: `https://yarrtifacts.com`. Uploads carry `Authorization: Bearer <token>` — a personal access
 token (`yarr_pat_…`). Get one either from the **API tokens** tab, or via the `login` pairing flow
 below (which mints the same kind of token). Tokens can call the routes documented below (upload,
-replace, rename, slug-edit); anything else answers `403 {"error":"token scope"}` (except the
-read-only `GET /api/tokens/whoami`).
+replace, rename, slug-edit); anything else answers `403 {"error":"token scope"}` (except the two
+read-only routes: `GET /api/tokens/whoami` and `GET /api/domains`).
 
 ## Login (device pairing)
 
@@ -67,7 +67,7 @@ POST /api/artifacts/{artifactId}/versions/{versionId}/finalize
 ```
 
 → `200 { "url": "https://<slug>.arrtifacts.com/", "slug": "…", "versionId": "…",
-         "pathUrl": "/a/<slug>/", "subdomainUrl": "<slug>.arrtifacts.com" }`
+         "pathUrl": "https://arrtifacts.com/a/<slug>/", "subdomainUrl": "<slug>.arrtifacts.com" }`
 
 `url` is the shareable link.
 
@@ -101,7 +101,8 @@ Content-Type: application/json
 { "slug": "new-slug" }
 ```
 
-→ `200 { "slug": "…", "url": "https://<newSlug>.arrtifacts.com/", "published": true }`
+→ `200 { "slug": "…", "url": "https://<newSlug>.arrtifacts.com/",
+         "pathUrl": "https://arrtifacts.com/a/<newSlug>/", "published": true }`
 
 `published: false` means the link is dormant (the artifact isn't published) — check it before
 telling the user the new link is live.
@@ -109,6 +110,18 @@ telling the user the new link is live.
 Call either or both — they're independent requests, not one atomic operation. Changing the slug
 moves the public link immediately; the old one 404s and can be claimed by another artifact after a
 short cooldown, so warn the user before changing a link they've already shared.
+
+## Custom domains
+
+```
+GET /api/domains
+```
+
+→ `200 { "domains": [ { "id": "…", "hostname": "brand.example.com", "state": "active", "dns": … }, … ] }`
+
+Token-reachable, read-only, scoped to the caller's own owner. `state` is one of
+`pending_dns`/`active`/`failed`/`detaching`; only `active` domains serve a working link, at
+`https://<hostname>/<slug>/`. Attaching or detaching a domain is dashboard-only (session, not token).
 
 ## Errors
 

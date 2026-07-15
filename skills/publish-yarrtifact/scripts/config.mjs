@@ -43,6 +43,16 @@ export function resolveAuth(explicitApi) {
   return { token, apiOrigin };
 }
 
+/** Read-merge-write (#64): applies `patch` on top of whatever's on disk (or {} if none/unreadable),
+ *  WITHOUT clobbering fields the patch doesn't mention — in particular the token/apiOrigin/createdAt
+ *  that `login` wrote. No-op (returns null, touches nothing) on a null/undefined patch, so call sites
+ *  can pass a possibly-null `configPatch` straight through without their own guard. */
+export function updateConfig(patch) {
+  if (!patch) return null;
+  const current = readConfig() || {};
+  return writeConfig({ ...current, ...patch });
+}
+
 /** Write the config atomically (temp file + rename) with 0600, so a Ctrl-C can't leave a partial or
  *  world-readable credential. `chmod 0600` is a POSIX no-op on Windows (ACL-only) — documented. */
 export function writeConfig(cfg) {

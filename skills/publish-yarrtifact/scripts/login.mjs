@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { startPairing, pollUntilApproved, LoginError } from "./login-core.mjs";
-import { writeConfig, resolveAuth, configPath, DEFAULT_API_ORIGIN } from "./config.mjs";
+import { updateConfig, resolveAuth, configPath, DEFAULT_API_ORIGIN } from "./config.mjs";
 
 function parseArgs(argv) {
   const a = { open: true }; // a.api stays undefined unless --api is passed
@@ -65,7 +65,9 @@ async function main() {
     console.error("Waiting for you to approve...");
 
     const { token } = await pollUntilApproved(pairing, fetch);
-    const path = writeConfig({ token, apiOrigin: pairing.apiOrigin, createdAt: new Date().toISOString() });
+    // Merge, not overwrite (#64) — a re-pair on a machine that already saved a --default-domain
+    // preference must not silently wipe it.
+    const path = updateConfig({ token, apiOrigin: pairing.apiOrigin, createdAt: new Date().toISOString() });
     // Never print the token itself.
     console.error("Connected. Saved to " + path);
     console.log("connected");

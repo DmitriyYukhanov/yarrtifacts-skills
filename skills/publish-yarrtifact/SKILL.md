@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -39,7 +39,18 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> [--title "My rep
 
 - `<path-to-this-skill>` is the directory containing this SKILL.md (you know it — you just read
   this file from it). There is no standard environment variable for it; substitute the real path.
-- On success, the **share URL is the last line of stdout**. Give that link to the user.
+- On success, every line after `artifactId: <id>` is a working link to the same artifact: subdomain,
+  path, and the branded one if a custom domain is attached. Give the user all of them as a short
+  list, not a wall of raw stdout:
+
+  ```
+  https://my-report.arrtifacts.com/
+  https://arrtifacts.com/a/my-report/
+  https://brand.example.com/my-report/
+  ```
+
+  Lead with the result, not a preamble. Don't say "Here are all the various links you can now use to
+  access your newly published artifact, listen..."; say "Published:" and list them.
 - `--title` names the artifact in the user's library. `--slug` requests a specific link name;
   omit it for a random one. If the slug is taken, the command fails with a clear message.
 
@@ -54,16 +65,35 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> --replace <artif
   version. (Lost it? It's visible in the dashboard, not to the token.)
 - `--title` and `--slug` do not combine with `--replace`; the command rejects that.
 
+## Custom domains (if you've attached one)
+
+If the account has exactly one active custom domain, its branded link gets added automatically;
+you don't need to set anything up. With two or more, the first publish after they're all attached
+(or after the set changes) still succeeds and prints the subdomain and path links. A note on stderr
+lists the candidates and asks you to check with the user, then re-run the same command with
+`--default-domain <hostname>` (or `--default-domain none` to skip a branded link) to save the choice
+and add the branded link from then on. That preference is stored locally and won't be asked again
+unless the attached domains change.
+
+To set or change it without publishing anything:
+
+```bash
+node "<path-to-this-skill>/scripts/upload.mjs" --default-domain <hostname|none>
+```
+
 ## Rename or change the link (no re-upload)
 
 ```bash
-node "<path-to-this-skill>/scripts/upload.mjs" --edit <artifactId> [--title "New title"] [--slug new-slug]
+node "<path-to-this-skill>/scripts/upload.mjs" --edit <artifactId> [--title "New title"] [--slug new-slug] [--default-domain <hostname|none>]
 ```
 
-- Pass `--title`, `--slug`, or both — at least one is required. Neither re-uploads content nor
-  touches the current version; it only edits the artifact's title and/or public link.
-- On success, `artifactId: <id>` prints first; a slug change then prints the new share URL as the
-  last line (a title-only edit has no URL to print). Give the new link to the user if the slug changed.
+- Pass `--title`, `--slug`, `--default-domain`, or any combination — at least one is required.
+  Neither `--title` nor `--slug` re-uploads content or touches the current version; they only edit
+  the artifact's title and/or public link. `--default-domain` alone (no `--title`/`--slug`) just
+  resolves and saves the branded-domain preference — see "Custom domains" below.
+- On success, `artifactId: <id>` prints first; a slug change then prints every resolved link
+  (subdomain, path, and branded if one resolved) the same way a publish does (a title-only edit has
+  no link to print). Give the new links to the user if the slug changed.
 - Changing the slug moves the public link immediately — the old one stops serving and may be
   claimed by someone else after a short cooldown, so warn the user before changing a link they've
   already shared.
