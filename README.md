@@ -17,8 +17,9 @@ node skills/publish-yarrtifact/scripts/login.mjs
 The token is saved to `~/.config/yarrtifacts/config.json` and used automatically on every upload.
 `login status` checks it's still good; `login logout` forgets it.
 
-It can only upload or replace artifacts. Deleting, renaming, and domain settings stay in the
-dashboard, so a leaked token can't do much harm, and you can revoke it there any time.
+A token can only upload, replace, rename, or change the slug of artifacts it owns. Everything else,
+including deleting and domain setup, stays in the dashboard, where you can also revoke the token any
+time.
 
 **CI or no browser?** Create a token in the dashboard (**API tokens** → Create token) and set it as
 an environment variable — it takes precedence over the saved login:
@@ -64,6 +65,24 @@ Update it later without changing the link:
 
 ```bash
 node skills/publish-yarrtifact/scripts/upload.mjs ./report --replace <artifactId>
+```
+
+Rename an artifact, or move its link, without re-uploading:
+
+```bash
+node skills/publish-yarrtifact/scripts/upload.mjs --edit <artifactId> --title "New title"
+node skills/publish-yarrtifact/scripts/upload.mjs --edit <artifactId> --slug new-slug
+```
+
+Changing the slug moves the public link right away, and the old one stops working. Worth checking
+first if you already shared it. You can pass both flags at once, but the rename lands first, so a
+slug that turns out to be taken leaves the new title already applied.
+
+Once a custom domain is active, the branded link comes back automatically (a domain still waiting on
+DNS gets skipped). If you have two or more, pick which one to use by default:
+
+```bash
+node skills/publish-yarrtifact/scripts/upload.mjs --default-domain <hostname>
 ```
 
 No Node.js? The REST flow is four curl calls — see
