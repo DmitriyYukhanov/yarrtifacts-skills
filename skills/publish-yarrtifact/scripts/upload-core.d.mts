@@ -66,8 +66,12 @@ export interface DomainSelection {
 export function fetchActiveDomains(
   opts: { apiOrigin: string; token: string },
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-): Promise<string[]>;
-export function resolveDomainSelection(activeHostnames: string[], stored: DomainPreference): DomainSelection;
+): Promise<{ active: string[]; primary: string | null }>;
+export function resolveDomainSelection(
+  activeHostnames: string[],
+  stored: DomainPreference,
+  primaryHostname?: string | null,
+): DomainSelection;
 export function validateDefaultDomainChoice(choice: string, activeHostnames: string[]): string;
 
 export function formatFailure(status: number, body: { message?: string; error?: string } | null | undefined): string;

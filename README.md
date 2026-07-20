@@ -79,7 +79,8 @@ first if you already shared it. You can pass both flags at once, but the rename 
 slug that turns out to be taken leaves the new title already applied.
 
 Once a custom domain is active, the branded link comes back automatically (a domain still waiting on
-DNS gets skipped). If you have two or more, pick which one to use by default:
+DNS gets skipped). If you have two or more, mark one as the primary in the dashboard and it's used
+automatically everywhere — nothing to set here. Or pick which one the CLI uses by default per-run:
 
 ```bash
 node skills/publish-yarrtifact/scripts/upload.mjs --default-domain <hostname>

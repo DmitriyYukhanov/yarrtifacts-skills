@@ -117,11 +117,15 @@ short cooldown, so warn the user before changing a link they've already shared.
 GET /api/domains
 ```
 
-→ `200 { "domains": [ { "id": "…", "hostname": "brand.example.com", "state": "active", "dns": … }, … ] }`
+→ `200 { "domains": [ { "id": "…", "hostname": "brand.example.com", "state": "active", "primary": true, "dns": … }, … ] }`
 
 Token-reachable, read-only, scoped to the caller's own owner. `state` is one of
 `pending_dns`/`active`/`failed`/`detaching`; only `active` domains serve a working link, at
-`https://<hostname>/<slug>/`. Attaching or detaching a domain is dashboard-only (session, not token).
+`https://<hostname>/<slug>/`. `primary` (#42) marks the ONE domain the owner chose in the dashboard
+as their canonical link; when an active domain has `primary: true`, use it as the branded host and
+skip prompting — the owner already decided. If no active domain is primary, fall back to the local
+`--default-domain` preference (one active domain is used automatically; 2+ prompts for a pick).
+Attaching, detaching, and choosing the primary are all dashboard-only (session, not token).
 
 ## Errors
 

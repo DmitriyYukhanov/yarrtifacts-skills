@@ -104,28 +104,39 @@ function authHeaders(token, withJson) {
   return withJson ? { ...auth, "content-type": "application/json" } : auth;
 }
 
-/** GET /api/domains via the token; returns lowercased, sorted hostnames with state==='active' only
- *  (pending/failed/detaching domains aren't usable share links yet). Throws UploadError on a
- *  transport or HTTP failure — callers decide whether that's fatal for their situation. */
+/** GET /api/domains via the token; returns the lowercased+sorted active hostnames (pending/failed/
+ *  detaching domains aren't usable share links yet) AND which of them the owner marked as the backend
+ *  "primary" (#42), or null if none is set/active. Throws UploadError on a transport or HTTP failure —
+ *  callers decide whether that's fatal for their situation. */
 export async function fetchActiveDomains(opts, fetchImpl) {
   const apiOrigin = normalizeOrigin(opts.apiOrigin);
   const j = await request(fetchImpl, apiOrigin + "/api/domains", { method: "GET", headers: authHeaders(opts.token) });
   const domains = Array.isArray(j.domains) ? j.domains : [];
-  return domains.filter((d) => d && d.state === "active").map((d) => String(d.hostname).toLowerCase()).sort();
+  const activeRows = domains.filter((d) => d && d.state === "active");
+  const active = activeRows.map((d) => String(d.hostname).toLowerCase()).sort();
+  const primaryRow = activeRows.find((d) => d.primary === true);
+  const primary = primaryRow ? String(primaryRow.hostname).toLowerCase() : null;
+  return { active, primary };
 }
 
-/** Pure decision (#64): given the CURRENT active hostnames and the locally stored preference, decide
- *  which branded hostname (if any) to use this run, and whether the CLI needs to ask the human.
- *  Never throws. Rules, in order:
+/** Pure decision (#64, extended #42): given the CURRENT active hostnames, the locally stored
+ *  preference, and the backend "primary" (if any), decide which branded hostname to use this run and
+ *  whether the CLI needs to ask the human. Never throws. Rules, in order:
  *   - 0 active -> no branded link, no hint (nothing to choose from).
+ *   - a backend PRIMARY that is active (#42) -> ALWAYS that one, no hint. It is the owner's explicit
+ *     global choice (dashboard "Make primary"), so it wins over the local per-artifact preference and
+ *     spares the agent from picking. An explicit per-run --default-domain override still wins over it
+ *     (that path never reaches here). A non-active/absent primary is ignored, falling through below.
  *   - exactly 1 active -> ALWAYS that one, unconditionally — even overriding a stored "none" or a
  *     different previous pick. Never prompts.
- *   - 2+ active -> reuse the stored choice ONLY if the active set is UNCHANGED from the stored
- *     snapshot (order/case-independent) and the choice is still valid ("none", or a hostname still
- *     in the active set); otherwise a non-blocking hint listing the candidates (never a throw). */
-export function resolveDomainSelection(activeHostnames, stored) {
+ *   - 2+ active, no primary -> reuse the stored choice ONLY if the active set is UNCHANGED from the
+ *     stored snapshot (order/case-independent) and the choice is still valid ("none", or a hostname
+ *     still in the active set); otherwise a non-blocking hint listing the candidates (never a throw). */
+export function resolveDomainSelection(activeHostnames, stored, primaryHostname) {
   const active = [...activeHostnames].map((h) => String(h).toLowerCase()).sort();
   if (active.length === 0) return { brandedHostname: null, hint: null };
+  const primary = primaryHostname ? String(primaryHostname).toLowerCase() : null;
+  if (primary && active.includes(primary)) return { brandedHostname: primary, hint: null };
   if (active.length === 1) return { brandedHostname: active[0], hint: null };
 
   const storedSnapshot = stored && Array.isArray(stored.defaultDomainSnapshot)
@@ -163,7 +174,7 @@ export function validateDefaultDomainChoice(choice, activeHostnames) {
  *  a FRESH active list (never trusts a stale snapshot) so a typo or a since-detached hostname is
  *  caught. Throws UploadError on any problem — callers decide whether that's fatal for them. */
 async function overridePatch(apiOrigin, token, defaultDomainOverride, slug, fetchImpl) {
-  const active = await fetchActiveDomains({ apiOrigin, token }, fetchImpl);
+  const { active } = await fetchActiveDomains({ apiOrigin, token }, fetchImpl);
   const normalized = validateDefaultDomainChoice(defaultDomainOverride, active);
   // `slug` is undefined for the standalone call and for an edit that isn't ALSO changing the slug
   // (title-only, or --default-domain alone) — there's no PAT-reachable route to read an artifact's
@@ -198,13 +209,13 @@ async function resolveDomainsForRun(opts, slug, fetchImpl) {
       return { customDomainUrl: null, domainPrompt: null, configPatch: null, domainOverrideError: (e && e.message) || String(e) };
     }
   }
-  let active;
+  let active, primary;
   try {
-    active = await fetchActiveDomains({ apiOrigin, token }, fetchImpl);
+    ({ active, primary } = await fetchActiveDomains({ apiOrigin, token }, fetchImpl));
   } catch {
     return { customDomainUrl: null, domainPrompt: null, configPatch: null };
   }
-  const { brandedHostname, hint } = resolveDomainSelection(active, { defaultDomain, defaultDomainSnapshot });
+  const { brandedHostname, hint } = resolveDomainSelection(active, { defaultDomain, defaultDomainSnapshot }, primary);
   if (hint) return { customDomainUrl: null, domainPrompt: hint, configPatch: null };
   if (!brandedHostname) return { customDomainUrl: null, domainPrompt: null, configPatch: null };
   return {

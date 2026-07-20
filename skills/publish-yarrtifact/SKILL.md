@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -67,13 +67,17 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> --replace <artif
 
 ## Custom domains (if you've attached one)
 
-If the account has exactly one active custom domain, its branded link gets added automatically;
-you don't need to set anything up. With two or more, the first publish after they're all attached
-(or after the set changes) still succeeds and prints the subdomain and path links. A note on stderr
-lists the candidates and asks you to check with the user, then re-run the same command with
+If the owner has chosen a **primary** domain in the dashboard (the "Make primary" button, #42), that
+domain's branded link is used automatically on every publish — no pick, no prompt, even with several
+domains attached. You don't need to do anything.
+
+If no primary is set: with exactly one active custom domain, its branded link gets added
+automatically. With two or more, the first publish after they're all attached (or after the set
+changes) still succeeds and prints the subdomain and path links. A note on stderr lists the
+candidates and asks you to check with the user, then re-run the same command with
 `--default-domain <hostname>` (or `--default-domain none` to skip a branded link) to save the choice
-and add the branded link from then on. That preference is stored locally and won't be asked again
-unless the attached domains change.
+and add the branded link from then on. That local preference is stored per artifact and won't be
+asked again unless the attached domains change. Setting a primary in the dashboard later overrides it.
 
 To set or change it without publishing anything:
 
