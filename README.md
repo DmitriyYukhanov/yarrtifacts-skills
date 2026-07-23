@@ -89,6 +89,46 @@ node skills/publish-yarrtifact/scripts/upload.mjs --default-domain <hostname>
 No Node.js? The REST flow is four curl calls — see
 [`skills/publish-yarrtifact/references/api.md`](skills/publish-yarrtifact/references/api.md).
 
+## Keeping agents off built-in artifact tools
+
+Claude Code ships its own `Artifact` tool that publishes to claude.ai. With this plugin enabled, a
+hook intercepts that tool and points the agent back at `publish-yarrtifact`, so "publish this" lands
+on your own domain. Listing existing claude.ai artifacts still works; only publishing gets
+redirected.
+
+If you want a claude.ai artifact now and then, start Claude Code with the opt-out set:
+
+```bash
+YARRTIFACTS_ALLOW_BUILTIN_ARTIFACT=1 claude
+```
+
+The hook reads the environment Claude Code launched with, so exporting the variable in another
+terminal mid-session changes nothing. For a lasting opt-out put it in your settings instead, and
+restart:
+
+```json
+{ "env": { "YARRTIFACTS_ALLOW_BUILTIN_ARTIFACT": "1" } }
+```
+
+Prefer the per-run form. A variable exported in a shell profile turns the redirect off in every
+future session, and nothing announces that it happened.
+
+To turn the built-in tool off completely, so the agent falls through to this skill on its own, add
+one of these to your Claude Code settings:
+
+```json
+{ "disableArtifact": true }
+```
+
+```json
+{ "permissions": { "deny": ["Artifact"] } }
+```
+
+A deny rule takes the tool out of the model's context entirely. To drop our hook instead, disable or
+uninstall the plugin.
+
+Other agents have no artifact tool to intercept, so there the skill description is the only lever.
+
 ## Limits
 
 200 files, 95 MB per file, 200 MB per bundle. Browser-viewable file types only (HTML, Markdown,
