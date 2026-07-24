@@ -12,6 +12,7 @@ import { readdirSync, statSync, lstatSync, readFileSync, realpathSync } from "no
 import { join, relative, basename, sep } from "node:path";
 import { uploadFiles, editArtifact, validateArgs, UploadError, setDefaultDomain } from "./upload-core.mjs";
 import { resolveAuth, readConfig, updateConfig } from "./config.mjs";
+import { maybeOpen } from "./browser.mjs";
 
 // Mirrors the server's junk filter in src/shared/junk.ts (kept in sync by
 // test/integration/agent-skill-contract.test.ts). SEGMENTS match any path segment (a file OR
@@ -57,10 +58,10 @@ function walk(root) {
   return out;
 }
 
-const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>] [--default-domain <hostname|none>]\n   or: node upload.mjs --edit <artifactId> [--title <t>] [--slug <s>] [--api <origin>] [--default-domain <hostname|none>]\n   or: node upload.mjs --default-domain <hostname|none> [--api <origin>]";
+const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --edit <artifactId> [--title <t>] [--slug <s>] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --default-domain <hostname|none> [--api <origin>]";
 
 function parseArgs(argv) {
-  const a = {}; // a.api stays undefined unless --api is passed, so resolveAuth can fall back to the saved origin
+  const a = { open: true }; // a.api stays undefined unless --api is passed, so resolveAuth can fall back to the saved origin
   const rest = [];
   const val = (v) => { const x = argv[++i]; if (x === undefined) throw new UploadError("Missing value for " + v + "\n" + USAGE); return x; };
   let i = 0;
@@ -74,6 +75,7 @@ function parseArgs(argv) {
     else if (v === "--edit") a.edit = val(v);
     else if (v === "--api") a.api = val(v);
     else if (v === "--default-domain") a.defaultDomain = val(v);
+    else if (v === "--no-open") a.open = false; // don't open the published link in the browser
     else if (v.startsWith("--")) throw new UploadError("Unknown flag: " + v + "\n" + USAGE);
     else rest.push(v);
   }
@@ -143,6 +145,9 @@ async function main() {
       }
       printDomainHint(out.domainPrompt);
       if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
+      // A slug change moved the link — open it (a title-only / default-domain-only edit has no
+      // out.url, so maybeOpen no-ops). Never open a dormant (unpublished) link. Best-effort (#75).
+      if (out.published !== false) maybeOpen(out, { open: a.open });
       return;
     }
     if (!a.dir) throw new UploadError(USAGE);
@@ -165,6 +170,10 @@ async function main() {
     if (out.customDomainUrl) console.log(out.customDomainUrl);
     printDomainHint(out.domainPrompt);
     if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
+    // Open the published artifact in the browser (best link: branded if it resolved, else subdomain).
+    // Never open a dormant (unpublished) link. Best-effort — a failed launch never changes the exit
+    // code, and it runs AFTER the links are printed so the agent's output is unaffected (#75).
+    if (out.published !== false) maybeOpen(out, { open: a.open });
   } catch (e) {
     if (e && e.partial && e.partial.title !== undefined) {
       console.error(e.partial.title === null ? "Note: the title was already cleared." : "Note: the title was already changed to \"" + e.partial.title + "\".");

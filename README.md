@@ -61,6 +61,9 @@ node skills/publish-yarrtifact/scripts/upload.mjs ./report --title "Q3 report"
 # → https://q3-report.arrtifacts.com/
 ```
 
+The published link opens in your browser automatically (it's skipped on a headless or SSH box).
+Add `--no-open` to suppress it. Opening is best effort, so a machine with no browser still succeeds.
+
 Update it later without changing the link:
 
 ```bash

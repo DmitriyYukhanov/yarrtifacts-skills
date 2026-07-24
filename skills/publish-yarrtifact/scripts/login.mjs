@@ -9,10 +9,10 @@
  *        node login.mjs status                 # is the stored token still valid?
  *        node login.mjs logout                 # forget the stored token
  */
-import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { startPairing, pollUntilApproved, LoginError } from "./login-core.mjs";
 import { updateConfig, resolveAuth, configPath, DEFAULT_API_ORIGIN } from "./config.mjs";
+import { openBrowser } from "./browser.mjs";
 
 function parseArgs(argv) {
   const a = { open: true }; // a.api stays undefined unless --api is passed
@@ -25,12 +25,6 @@ function parseArgs(argv) {
     else throw new LoginError("Unknown argument: " + v);
   }
   return a;
-}
-
-function openBrowser(url) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try { spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref(); } catch { /* print-only fallback */ }
 }
 
 async function doStatus(explicitApi) {

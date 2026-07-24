@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.7.0"
+  version: "0.8.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -53,6 +53,12 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> [--title "My rep
   https://brand.example.com/my-report/
   ```
 
+- On success the command also opens the artifact in the default browser (the branded link if a
+  custom domain resolved, else the subdomain one), the same way `login` opens its approve page. It
+  skips this automatically in a clearly headless or remote environment (Linux with no display, or an
+  SSH session). **Pass `--no-open` when the user asked you not to open anything, or when you're
+  running unattended and a browser window would be unwanted.** Opening is best effort: it never
+  changes the command's output or exit code, so a machine with no browser still succeeds.
   Lead with the result, not a preamble. Don't say "Here are all the various links you can now use to
   access your newly published artifact, listen..."; say "Published:" and list them.
 - `--title` names the artifact in the user's library. `--slug` requests a specific link name;
