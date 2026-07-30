@@ -22,11 +22,11 @@ export function formatFailure(status, body) {
 // check and editArtifact's own opts-shaped guard (their field names differ — CLI uses `edit`,
 // editArtifact's opts use `artifactId` — so this takes just the values that actually matter, not a
 // whole args/opts object, keeping both callers' messages from drifting apart independently.
-function requireEditField(title, slug, hasDomainOverride) {
+function requireEditField(title, slug, hasDomainOverride, hasVisibility) {
   // Presence check, not truthiness: --title "" is a real request (clear the title, mirroring the
   // dashboard's own rename field), not "not provided" — a falsy check would silently drop it.
-  if (title === undefined && slug === undefined && !hasDomainOverride) {
-    throw new UploadError("Nothing to edit: pass --title, --slug, and/or --default-domain with --edit.");
+  if (title === undefined && slug === undefined && !hasDomainOverride && !hasVisibility) {
+    throw new UploadError("Nothing to edit: pass --title, --slug, --visibility, and/or --default-domain with --edit.");
   }
 }
 
@@ -41,7 +41,7 @@ export function validateArgs(args) {
     if (args.replace || args.abandon || args.dir) {
       throw new UploadError("--edit only combines with --title and/or --slug (it edits an existing artifact's metadata, no re-upload). Remove --replace, --abandon, or the folder path.");
     }
-    requireEditField(args.title, args.slug, args.defaultDomain !== undefined);
+    requireEditField(args.title, args.slug, args.defaultDomain !== undefined, args.visibility !== undefined);
     return;
   }
   if (args.replace && (args.title || args.slug || args.abandon)) {
@@ -51,6 +51,63 @@ export function validateArgs(args) {
 
 export function encodePath(rel) {
   return rel.split("/").map(encodeURIComponent).join("/");
+}
+
+// ── Visibility (#83) ────────────────────────────────────────────────────────────────────────────
+// A token may only TIGHTEN an artifact (public → password → private) or rotate a share password in
+// place; the server enforces that and answers 403 "token scope" on a downgrade. We do not duplicate
+// the direction rule here — the server owns it, and a stale client copy would just drift.
+const VISIBILITIES = ["public", "password", "private"];
+
+/** True when `--edit` was given with ONLY `--visibility` (no title/slug/default-domain). Such an edit
+ *  is complete on its own and must NOT reach editArtifact: that call moves title/slug/default-domain,
+ *  so with none of them present it would trip its own "nothing to edit" guard and reject a perfectly
+ *  valid request. Lives here (not in the CLI shell) so the case stays covered by a test. */
+export function isVisibilityOnlyEdit(args) {
+  return !!args.edit && args.visibility !== undefined
+    && args.title === undefined && args.slug === undefined && args.defaultDomain === undefined;
+}
+
+/** Validate a --visibility value. Throws an UploadError naming the accepted set. */
+export function validateVisibilityChoice(choice) {
+  if (!VISIBILITIES.includes(choice)) {
+    throw new UploadError("--visibility must be one of: " + VISIBILITIES.join(", ") + ".");
+  }
+  return choice;
+}
+
+/** A fresh share password, generated locally when the caller did not supply one. Base62 so it can be
+ *  pasted into a chat or a terminal without quoting or escaping. Generated (rather than accepted as
+ *  a CLI flag) precisely so the secret never reaches argv, where `ps` and shell history would see it. */
+export function generateSharePassword(length = 20) {
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(length * 2);
+  crypto.getRandomValues(bytes);
+  const reject = 256 - (256 % ALPHABET.length); // rejection sampling keeps the draw unbiased
+  let out = "";
+  for (const b of bytes) {
+    if (b >= reject) continue;
+    out += ALPHABET[b % ALPHABET.length];
+    if (out.length === length) break;
+  }
+  return out.length === length ? out : out + generateSharePassword(length - out.length);
+}
+
+/** Set an artifact's visibility. Returns the server's resolved visibility, plus the password when one
+ *  was applied — the CALLER prints it once so the human can pass it on; it is never persisted here. */
+export async function setVisibility(opts, fetchImpl) {
+  const { token, artifactId, visibility, password } = opts;
+  const apiOrigin = normalizeOrigin(opts.apiOrigin);
+  validateVisibilityChoice(visibility);
+  const body = { visibility };
+  if (visibility === "password") {
+    if (typeof password !== "string" || !password) throw new UploadError("A share password is required for --visibility password.");
+    body.password = password;
+  }
+  const j = await request(fetchImpl, apiOrigin + "/api/artifacts/" + encodeURIComponent(artifactId) + "/visibility", {
+    method: "POST", headers: authHeaders(token, true), body: JSON.stringify(body),
+  });
+  return { visibility: j.visibility || visibility, ...(visibility === "password" ? { password } : {}) };
 }
 
 /** Actual byte length of a PUT body (utf-8 for strings). Sent as an explicit Content-Length so the

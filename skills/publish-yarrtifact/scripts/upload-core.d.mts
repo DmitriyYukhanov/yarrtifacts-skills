@@ -75,7 +75,7 @@ export function resolveDomainSelection(
 export function validateDefaultDomainChoice(choice: string, activeHostnames: string[]): string;
 
 export function formatFailure(status: number, body: { message?: string; error?: string } | null | undefined): string;
-export function validateArgs(args: { replace?: string; title?: string; slug?: string; abandon?: string; edit?: string; dir?: string; defaultDomain?: string }): void;
+export function validateArgs(args: { replace?: string; title?: string; slug?: string; abandon?: string; edit?: string; dir?: string; defaultDomain?: string; visibility?: string }): void;
 export function encodePath(rel: string): string;
 export function bodyByteLength(body: string | Uint8Array): number;
 export function uploadFiles(
@@ -90,3 +90,14 @@ export function setDefaultDomain(
   opts: { apiOrigin: string; token: string; defaultDomainOverride: string },
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
 ): Promise<{ defaultDomain: string; configPatch: DomainPreference }>;
+
+// Visibility (#83). A token may only tighten (public → password → private) or rotate a password;
+// the SERVER owns that rule and answers 403 "token scope" on a downgrade.
+export type Visibility = "public" | "password" | "private";
+export function validateVisibilityChoice(choice: string): Visibility;
+export function isVisibilityOnlyEdit(args: { edit?: string; visibility?: string; title?: string; slug?: string; defaultDomain?: string }): boolean;
+export function generateSharePassword(length?: number): string;
+export function setVisibility(
+  opts: { apiOrigin: string; token: string; artifactId: string; visibility: Visibility; password?: string },
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+): Promise<{ visibility: Visibility; password?: string }>;

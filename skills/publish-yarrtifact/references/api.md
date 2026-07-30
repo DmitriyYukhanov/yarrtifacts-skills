@@ -3,8 +3,17 @@
 Base: `https://yarrtifacts.com`. Uploads carry `Authorization: Bearer <token>` — a personal access
 token (`yarr_pat_…`). Get one either from the **API tokens** tab, or via the `login` pairing flow
 below (which mints the same kind of token). Tokens can call the routes documented below (upload,
-replace, rename, slug-edit); anything else answers `403 {"error":"token scope"}` (except the two
-read-only routes: `GET /api/tokens/whoami` and `GET /api/domains`).
+replace, rename, slug-edit, and visibility in the tightening direction only); anything else answers
+`403 {"error":"token scope"}` (except the two read-only routes: `GET /api/tokens/whoami` and
+`GET /api/domains`).
+
+## Visibility
+
+`POST /api/artifacts/{artifactId}/visibility` with `{"visibility":"public"|"password"|"private"}`,
+plus `"password":"…"` (min 6 chars) when setting `password`. A token may only move an artifact to an
+equal-or-stricter state — `public → password → private`, or a password rotation in place. A request
+that would widen access answers `403 {"error":"token scope"}` naming the dashboard; the row is not
+touched. The password is hashed server-side (PBKDF2) and never readable back.
 
 ## Login (device pairing)
 

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.8.0"
+  version: "0.9.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -63,6 +63,28 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder-or-file> [--title "My rep
   access your newly published artifact, listen..."; say "Published:" and list them.
 - `--title` names the artifact in the user's library. `--slug` requests a specific link name;
   omit it for a random one. If the slug is taken, the command fails with a clear message.
+
+## Who can see it (public, password, private)
+
+New artifacts are public: anyone with the link opens it. Add `--visibility` to close that down.
+
+```bash
+node "<path-to-this-skill>/scripts/upload.mjs" <folder> --visibility password
+node "<path-to-this-skill>/scripts/upload.mjs" <folder> --visibility private
+```
+
+- `private` means only the owner, signed in, can open it. Nothing else to hand over.
+- `password` prints a `password: <secret>` line. It is generated locally and shown **once** — the
+  server keeps only a hash, so nobody can look it up later. Give it to the user together with the
+  link, and tell them to pass it to their teammates separately from the link itself.
+- To choose the password yourself, pipe it in: `printf '%s' "$PW" | node upload.mjs <folder>
+  --visibility password --password-stdin`, or set `YARRTIFACTS_ARTIFACT_PASSWORD`. **There is no
+  `--password` flag on purpose:** command arguments are visible to anything that can run `ps` and
+  they land in shell history, so a password must never be typed as one.
+- Tightening works on an existing artifact too: `--edit <artifactId> --visibility private`.
+- **One-way from here.** A token can make an artifact more private, never less. Opening a closed
+  artifact back up (or changing an existing password) is a dashboard action; the command fails with
+  a message saying so. Don't try to work around it.
 
 ## Update a published artifact (keep the same link)
 
@@ -122,7 +144,7 @@ user as-is. If a create failed partway, stderr also names the leftover draft's i
 | Status | Meaning |
 |---|---|
 | 401 | Token invalid or revoked. Run `login` again to reconnect (or set a fresh `YARRTIFACTS_TOKEN`). |
-| 403 "token scope" | This token can only upload, replace, rename, or change the slug of artifacts it owns. Anything else needs the dashboard. |
+| 403 "token scope" | This token can only upload, replace, rename, change the slug, or tighten the visibility of artifacts it owns. Anything else, including opening a closed artifact back up, needs the dashboard. |
 | 409 "slug taken" | Pick another `--slug`, or omit it. |
 | 413 | A file is over 95 MB, the bundle is over 200 MB, or a file grew after upload started. |
 | 429 | Rate limit. Wait a minute, retry once. |

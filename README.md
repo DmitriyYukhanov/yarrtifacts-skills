@@ -17,9 +17,10 @@ node skills/publish-yarrtifact/scripts/login.mjs
 The token is saved to `~/.config/yarrtifacts/config.json` and used automatically on every upload.
 `login status` checks it's still good; `login logout` forgets it.
 
-A token can only upload, replace, rename, or change the slug of artifacts it owns. Everything else,
-including deleting and domain setup, stays in the dashboard, where you can also revoke the token any
-time.
+A token can only upload, replace, rename, change the slug, or tighten the visibility of artifacts it owns.
+Tightening is one-way: a token can make an artifact password-protected or private, but only the dashboard
+can open one back up. Everything else, including deleting and domain setup, stays in the dashboard, where
+you can also revoke the token any time.
 
 **CI or no browser?** Create a token in the dashboard (**API tokens** → Create token) and set it as
 an environment variable — it takes precedence over the saved login:

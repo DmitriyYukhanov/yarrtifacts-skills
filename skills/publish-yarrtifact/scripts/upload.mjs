@@ -10,7 +10,7 @@
  */
 import { readdirSync, statSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
-import { uploadFiles, editArtifact, validateArgs, UploadError, setDefaultDomain } from "./upload-core.mjs";
+import { uploadFiles, editArtifact, validateArgs, UploadError, setDefaultDomain, setVisibility, validateVisibilityChoice, generateSharePassword, isVisibilityOnlyEdit } from "./upload-core.mjs";
 import { resolveAuth, readConfig, updateConfig } from "./config.mjs";
 import { maybeOpen } from "./browser.mjs";
 
@@ -58,7 +58,7 @@ function walk(root) {
   return out;
 }
 
-const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --edit <artifactId> [--title <t>] [--slug <s>] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --default-domain <hostname|none> [--api <origin>]";
+const USAGE = "Usage: node upload.mjs <folder-or-file> [--title <t>] [--slug <s>] [--visibility public|password|private] [--password-stdin] [--replace <artifactId>] [--abandon <artifactId>] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --edit <artifactId> [--title <t>] [--slug <s>] [--visibility public|password|private] [--password-stdin] [--api <origin>] [--default-domain <hostname|none>] [--no-open]\n   or: node upload.mjs --default-domain <hostname|none> [--api <origin>]";
 
 function parseArgs(argv) {
   const a = { open: true }; // a.api stays undefined unless --api is passed, so resolveAuth can fall back to the saved origin
@@ -76,6 +76,10 @@ function parseArgs(argv) {
     else if (v === "--api") a.api = val(v);
     else if (v === "--default-domain") a.defaultDomain = val(v);
     else if (v === "--no-open") a.open = false; // don't open the published link in the browser
+    else if (v === "--visibility") a.visibility = validateVisibilityChoice(val(v));
+    // DELIBERATELY no `--password <value>`: argv is world-readable via `ps` and lands in shell
+    // history and agent session logs. Supply your own via stdin, or let the tool generate one.
+    else if (v === "--password-stdin") a.passwordStdin = true;
     else if (v.startsWith("--")) throw new UploadError("Unknown flag: " + v + "\n" + USAGE);
     else rest.push(v);
   }
@@ -88,6 +92,50 @@ function parseArgs(argv) {
  *  can't drift between the two. */
 function formatDefaultDomainMessage(value) {
   return value === "none" ? "Default custom domain: none (no branded link by default)." : "Default custom domain set to " + value + ".";
+}
+
+/** Read one line from stdin without echoing it back anywhere (#83). Used for --password-stdin so a
+ *  caller-chosen share password never appears in argv (visible to `ps`) or in shell history. */
+function readPasswordFromStdin() {
+  let raw = "";
+  try {
+    raw = readFileSync(0, "utf8"); // fd 0 — works for a pipe and for a heredoc
+  } catch {
+    throw new UploadError("--password-stdin was passed but nothing could be read from stdin.");
+  }
+  const pw = raw.split("\n")[0].replace(/\r$/, "");
+  if (!pw) throw new UploadError("--password-stdin was passed but stdin was empty.");
+  return pw;
+}
+
+/** Resolve the share password for --visibility password, in precedence order: stdin (explicit),
+ *  the YARRTIFACTS_ARTIFACT_PASSWORD env var, else generate a strong one locally. Returns the
+ *  password and whether we made it up (the caller must print a generated one exactly once). */
+function resolveSharePassword(a) {
+  if (a.passwordStdin) return { password: readPasswordFromStdin(), generated: false };
+  const fromEnv = process.env.YARRTIFACTS_ARTIFACT_PASSWORD;
+  if (fromEnv) return { password: fromEnv, generated: false };
+  return { password: generateSharePassword(), generated: true };
+}
+
+/** Apply --visibility after a successful publish/edit and tell the human what happened. A generated
+ *  password is printed ONCE, to stdout, because nobody can recover it later: the server stores only a
+ *  hash. A visibility failure is fatal (non-zero exit) — silently leaving an artifact public when the
+ *  user asked for private is exactly the outcome this feature exists to prevent. */
+async function applyVisibility(a, ctxIds) {
+  if (!a.visibility) return;
+  const { token, apiOrigin } = ctxIds;
+  const needsPassword = a.visibility === "password";
+  const { password, generated } = needsPassword ? resolveSharePassword(a) : { password: undefined, generated: false };
+  const out = await setVisibility({ apiOrigin, token, artifactId: ctxIds.artifactId, visibility: a.visibility, password }, fetch);
+  if (out.visibility === "password") {
+    console.log("password: " + out.password);
+    console.error(generated
+      ? "A share password was generated. Give it to the people who should see this artifact — it cannot be shown again."
+      : "Share password set. It cannot be shown again.");
+  } else {
+    console.error(out.visibility === "private" ? "Visibility: private (only you can open it)." : "Visibility: public.");
+  }
 }
 
 /** Prints the non-blocking "ambiguous default domain" hint to stderr — never called on a failure
@@ -111,7 +159,7 @@ async function main() {
     // this branch instead of hitting the usual "missing folder" error, quietly dropping the
     // create/replace/rename the caller actually asked for. Presence checks, not truthiness — an
     // explicit --title "" is a real request (see requireEditField above), not "not provided".
-    if (a.defaultDomain !== undefined && !a.dir && !a.edit && !a.replace && !a.abandon && a.title === undefined && a.slug === undefined) {
+    if (a.defaultDomain !== undefined && !a.dir && !a.edit && !a.replace && !a.abandon && a.title === undefined && a.slug === undefined && a.visibility === undefined) {
       const { token, apiOrigin } = resolveAuth(a.api);
       if (!token) throw new UploadError("Not connected. Run `node login.mjs` to connect your account, or set YARRTIFACTS_TOKEN.");
       const out = await setDefaultDomain({ apiOrigin, token, defaultDomainOverride: a.defaultDomain }, fetch);
@@ -125,6 +173,14 @@ async function main() {
       const { token, apiOrigin } = resolveAuth(a.api);
       if (!token) throw new UploadError("Not connected. Run `node login.mjs` to connect your account, or set YARRTIFACTS_TOKEN.");
       validateArgs(a);
+      // --visibility ALONE (#83) is a complete edit on its own, and editArtifact has nothing to do
+      // for it (it only moves title/slug/default-domain). Calling it anyway would trip its own
+      // "nothing to edit" guard, so handle this case here and skip the pointless round trip.
+      if (isVisibilityOnlyEdit(a)) {
+        console.log("artifactId: " + a.edit);
+        await applyVisibility(a, { token, apiOrigin, artifactId: a.edit });
+        return;
+      }
       const out = await editArtifact({ apiOrigin, token, artifactId: a.edit, title: a.title, slug: a.slug, ...domainOpts }, fetch);
       if (out.configPatch) updateConfig(out.configPatch);
       if (out.url && out.published === false) console.error("Note: this artifact is unpublished, so the new link is dormant. Publish it in the dashboard to make it live.");
@@ -145,6 +201,7 @@ async function main() {
       }
       printDomainHint(out.domainPrompt);
       if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
+      await applyVisibility(a, { token, apiOrigin, artifactId: out.artifactId });
       // A slug change moved the link — open it (a title-only / default-domain-only edit has no
       // out.url, so maybeOpen no-ops). Never open a dormant (unpublished) link. Best-effort (#75).
       if (out.published !== false) maybeOpen(out, { open: a.open });
@@ -170,6 +227,7 @@ async function main() {
     if (out.customDomainUrl) console.log(out.customDomainUrl);
     printDomainHint(out.domainPrompt);
     if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
+    await applyVisibility(a, { token, apiOrigin, artifactId: out.artifactId });
     // Open the published artifact in the browser (best link: branded if it resolved, else subdomain).
     // Never open a dormant (unpublished) link. Best-effort — a failed launch never changes the exit
     // code, and it runs AFTER the links are printed so the agent's output is unaffected (#75).
