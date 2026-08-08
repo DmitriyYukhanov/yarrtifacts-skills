@@ -15,6 +15,16 @@ equal-or-stricter state — `public → password → private`, or a password rot
 that would widen access answers `403 {"error":"token scope"}` naming the dashboard; the row is not
 touched. The password is hashed server-side (PBKDF2) and never readable back.
 
+**When creating**, call it between `init` and `finalize` if the artifact must never be public: it
+exists but serves nothing in that window, so the state is in place the moment the link goes live.
+After `finalize` the link is open until the call lands.
+
+**When replacing**, call it *after* `finalize` instead. That artifact is already live and a new
+version inherits the artifact's own visibility, so there is no open window to close — while gating
+first would rotate its share password, killing the secret its viewers hold, for a version that may
+still fail to upload. To close an artifact that is currently public and replace its content, close
+it first, then replace.
+
 ## Login (device pairing)
 
 Instead of pasting a token, the CLI can pair with the browser (no cookies needed on these routes):

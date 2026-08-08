@@ -284,24 +284,32 @@ async function resolveDomainsForRun(opts, slug, fetchImpl) {
 
 /**
  * Upload `files` ([{relativePath, size, body|readBody}]) as one artifact.
- * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon?, defaultDomain?,
- * defaultDomainSnapshot?, defaultDomainOverride? } — `replace`/`abandon` are existing artifact ids
- * (replace = new version of it; abandon = reclaim a failed create draft); the `defaultDomain*` trio
- * drives branded-link resolution (#64), sourced from the local config file / --default-domain flag.
- * Returns { url, pathUrl, slug, artifactId, versionId, published, customDomainUrl, domainPrompt,
- * configPatch, domainOverrideError? }; throws UploadError with the server's message (on a
- * create-path failure the thrown error carries `.artifactId` of the leftover draft).
+ * opts: { apiOrigin, token, files, title?, slug?, replace?, abandon?, visibility?, password?,
+ * defaultDomain?, defaultDomainSnapshot?, defaultDomainOverride? } — `replace`/`abandon` are
+ * existing artifact ids (replace = new version of it; abandon = reclaim a failed create draft);
+ * `visibility`/`password` gate a CREATE before it goes live; passing either with `replace` throws
+ * (gate a live artifact with setVisibility() AFTER this resolves). The `defaultDomain*` trio drives
+ * branded-link resolution (#64), sourced from the local config file / --default-domain flag.
+ * Returns { url, pathUrl, slug, artifactId, versionId, published, visibility, customDomainUrl,
+ * domainPrompt, configPatch, domainOverrideError? }. Throws UploadError with the server's message
+ * (on a create-path failure the thrown error carries `.artifactId` of the leftover draft).
  */
 export async function uploadFiles(opts, fetchImpl) {
-  const { token, files, title, slug, replace, abandon, defaultDomain, defaultDomainSnapshot, defaultDomainOverride } = opts;
+  const { token, files, title, slug, replace, abandon, visibility, password, defaultDomain, defaultDomainSnapshot, defaultDomainOverride } = opts;
   const apiOrigin = normalizeOrigin(opts.apiOrigin);
   validateArgs(opts);
+  if (replace && visibility) {
+    throw new UploadError("Set the visibility of a replaced artifact AFTER this resolves, with setVisibility(): it is already live, so gating it before the upload risks rotating its share password for a version that never ships.");
+  }
   if (!files || !files.length) throw new UploadError("Nothing to upload: the folder has no files.");
   const auth = authHeaders(token);
   const jsonHeaders = authHeaders(token, true);
   const manifest = files.map((f) => ({ relativePath: f.relativePath, size: f.size }));
 
   let artifactId, versionId, slugOut;
+  // The state the SERVER reported back, never the value we asked for — echoing the input would make
+  // any assertion on it pass even with the whole setVisibility call removed.
+  let serverResolvedVisibility = null;
   if (replace) {
     const j = await request(fetchImpl, apiOrigin + "/api/artifacts/" + encodeURIComponent(replace) + "/replace", {
       method: "POST", headers: jsonHeaders, body: JSON.stringify({ manifest }),
@@ -352,6 +360,11 @@ export async function uploadFiles(opts, fetchImpl) {
     }
   }
   try {
+    // Nothing serves until finalize below, so the artifact goes live already closed (#92).
+    if (visibility) {
+      serverResolvedVisibility = (await setVisibility({ apiOrigin, token, artifactId, visibility, password }, fetchImpl)).visibility;
+    }
+
     await Promise.all(Array.from({ length: Math.min(PUT_CONCURRENCY, files.length) }, putWorker));
 
     const fin = await request(fetchImpl,
@@ -367,6 +380,9 @@ export async function uploadFiles(opts, fetchImpl) {
       artifactId,
       versionId,
       published: fin.published !== false,
+      // What the artifact was gated to before it went live, as the SERVER resolved it — null when
+      // the caller asked for nothing.
+      visibility: serverResolvedVisibility,
     };
     // resolveDomainsForRun's every return path already sets customDomainUrl/domainPrompt/configPatch
     // (see its own doc comment), so there's no default to spread in here first.

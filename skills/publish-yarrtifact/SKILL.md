@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires network access and Node.js 18+ (for the bundled script) or any HTTP client (curl works — see references/api.md).
 metadata:
   author: yarrtifacts
-  version: "0.9.0"
+  version: "0.10.0"
 ---
 
 # Publish an artifact to yarrtifacts.com
@@ -77,6 +77,14 @@ node "<path-to-this-skill>/scripts/upload.mjs" <folder> --visibility private
 - `password` prints a `password: <secret>` line. It is generated locally and shown **once** — the
   server keeps only a hash, so nobody can look it up later. Give it to the user together with the
   link, and tell them to pass it to their teammates separately from the link itself.
+- On a new publish the artifact is closed before it goes live, so a link on stdout means it is
+  already in the state you asked for. The `password:` line prints after that link, once there is an
+  artifact for it to belong to. If anything fails first, nothing is published, no password is
+  printed, and the command names the leftover draft for `--abandon` on the retry.
+- `--replace` works the other way round: the content publishes first, then the gate. That artifact
+  is already live, so closing it early could rotate a share password for a version that never ships.
+  If the gate then fails, stderr says so and gives you the retry command. Relay it: the new version
+  is live, under the artifact's previous visibility.
 - To choose the password yourself, pipe it in: `printf '%s' "$PW" | node upload.mjs <folder>
   --visibility password --password-stdin`, or set `YARRTIFACTS_ARTIFACT_PASSWORD`. **There is no
   `--password` flag on purpose:** command arguments are visible to anything that can run `ps` and

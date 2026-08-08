@@ -118,24 +118,34 @@ function resolveSharePassword(a) {
   return { password: generateSharePassword(), generated: true };
 }
 
-/** Apply --visibility after a successful publish/edit and tell the human what happened. A generated
- *  password is printed ONCE, to stdout, because nobody can recover it later: the server stores only a
- *  hash. A visibility failure is fatal (non-zero exit) — silently leaving an artifact public when the
- *  user asked for private is exactly the outcome this feature exists to prevent. */
-async function applyVisibility(a, ctxIds) {
-  if (!a.visibility) return;
-  const { token, apiOrigin } = ctxIds;
+/** Null when --visibility wasn't passed. Resolve before anything commits: reading a password from
+ *  stdin can block and can fail. */
+function resolveVisibilityRequest(a) {
+  if (!a.visibility) return null;
   const needsPassword = a.visibility === "password";
   const { password, generated } = needsPassword ? resolveSharePassword(a) : { password: undefined, generated: false };
-  const out = await setVisibility({ apiOrigin, token, artifactId: ctxIds.artifactId, visibility: a.visibility, password }, fetch);
-  if (out.visibility === "password") {
-    console.log("password: " + out.password);
-    console.error(generated
+  return { visibility: a.visibility, password, generated };
+}
+
+/** The server keeps only a hash, so a generated password reaches stdout here or never. */
+function reportVisibility(req) {
+  if (!req) return;
+  if (req.visibility === "password") {
+    console.log("password: " + req.password);
+    console.error(req.generated
       ? "A share password was generated. Give it to the people who should see this artifact — it cannot be shown again."
       : "Share password set. It cannot be shown again.");
   } else {
-    console.error(out.visibility === "private" ? "Visibility: private (only you can open it)." : "Visibility: public.");
+    console.error(req.visibility === "private" ? "Visibility: private (only you can open it)." : "Visibility: public.");
   }
+}
+
+/** Gate an artifact that is already live: `--edit`, and `--replace` once its content has shipped. */
+async function applyVisibility(req, ctxIds) {
+  if (!req) return;
+  const { token, apiOrigin } = ctxIds;
+  const out = await setVisibility({ apiOrigin, token, artifactId: ctxIds.artifactId, visibility: req.visibility, password: req.password }, fetch);
+  reportVisibility({ ...req, visibility: out.visibility });
 }
 
 /** Prints the non-blocking "ambiguous default domain" hint to stderr — never called on a failure
@@ -148,6 +158,8 @@ function printDomainHint(prompt) {
 }
 
 async function main() {
+  // Out here so the catch below can tell "nothing shipped" from "only the gate failed".
+  let publishedArtifactId = "";
   try {
     const a = parseArgs(process.argv.slice(2));
     const cfg = readConfig() || {};
@@ -173,12 +185,14 @@ async function main() {
       const { token, apiOrigin } = resolveAuth(a.api);
       if (!token) throw new UploadError("Not connected. Run `node login.mjs` to connect your account, or set YARRTIFACTS_TOKEN.");
       validateArgs(a);
+      // Before editArtifact: an empty --password-stdin must not abort with the slug already moved.
+      const editVis = resolveVisibilityRequest(a);
       // --visibility ALONE (#83) is a complete edit on its own, and editArtifact has nothing to do
       // for it (it only moves title/slug/default-domain). Calling it anyway would trip its own
       // "nothing to edit" guard, so handle this case here and skip the pointless round trip.
       if (isVisibilityOnlyEdit(a)) {
         console.log("artifactId: " + a.edit);
-        await applyVisibility(a, { token, apiOrigin, artifactId: a.edit });
+        await applyVisibility(editVis, { token, apiOrigin, artifactId: a.edit });
         return;
       }
       const out = await editArtifact({ apiOrigin, token, artifactId: a.edit, title: a.title, slug: a.slug, ...domainOpts }, fetch);
@@ -201,7 +215,7 @@ async function main() {
       }
       printDomainHint(out.domainPrompt);
       if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
-      await applyVisibility(a, { token, apiOrigin, artifactId: out.artifactId });
+      await applyVisibility(editVis, { token, apiOrigin, artifactId: out.artifactId });
       // A slug change moved the link — open it (a title-only / default-domain-only edit has no
       // out.url, so maybeOpen no-ops). Never open a dormant (unpublished) link. Best-effort (#75).
       if (out.published !== false) maybeOpen(out, { open: a.open });
@@ -216,7 +230,11 @@ async function main() {
     const files = st.isDirectory()
       ? walk(a.dir)
       : [{ relativePath: basename(a.dir), size: st.size, readBody: () => readFileSync(a.dir) }];
-    const out = await uploadFiles({ apiOrigin, token, files, title: a.title, slug: a.slug, replace: a.replace, abandon: a.abandon, ...domainOpts }, fetch);
+    const vis = resolveVisibilityRequest(a);
+    // uploadFiles refuses replace+visibility: a live artifact is gated after its content ships.
+    const gateNow = a.replace ? {} : { visibility: vis?.visibility, password: vis?.password };
+    const out = await uploadFiles({ apiOrigin, token, files, title: a.title, slug: a.slug, replace: a.replace, abandon: a.abandon, ...gateNow, ...domainOpts }, fetch);
+    publishedArtifactId = out.artifactId;
     if (out.configPatch) updateConfig(out.configPatch);
     if (!out.published) console.error("Note: this artifact is unpublished, so the link is dormant. Publish it in the dashboard to make it live.");
     // artifactId first (agents remember it for --replace), then every resolved link — subdomain,
@@ -227,7 +245,8 @@ async function main() {
     if (out.customDomainUrl) console.log(out.customDomainUrl);
     printDomainHint(out.domainPrompt);
     if (out.domainOverrideError) console.error("Note: --default-domain not saved: " + out.domainOverrideError);
-    await applyVisibility(a, { token, apiOrigin, artifactId: out.artifactId });
+    if (a.replace) await applyVisibility(vis, { token, apiOrigin, artifactId: out.artifactId });
+    else reportVisibility(vis && { ...vis, visibility: out.visibility ?? vis.visibility });
     // Open the published artifact in the browser (best link: branded if it resolved, else subdomain).
     // Never open a dormant (unpublished) link. Best-effort — a failed launch never changes the exit
     // code, and it runs AFTER the links are printed so the agent's output is unaffected (#75).
@@ -240,7 +259,8 @@ async function main() {
     if (e && e.artifactId) {
       console.error("A draft artifact was left behind (id " + e.artifactId + "). Add --abandon " + e.artifactId + " to your retry to reclaim it, or delete it in the dashboard.");
     }
-    process.exit(1);
+    if (publishedArtifactId) console.error("The new version published; only the visibility change failed. Re-run `--edit " + publishedArtifactId + " --visibility …` to retry it.");
+    process.exitCode = 1;
   }
 }
 main();

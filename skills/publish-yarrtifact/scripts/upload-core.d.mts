@@ -34,6 +34,8 @@ export interface UploadResult {
   /** Set only when an explicit --default-domain override was invalid or couldn't be validated — the
    *  publish itself still succeeded. */
   domainOverrideError?: string;
+  /** What the artifact was gated to BEFORE it went live, or null when the caller asked for nothing. */
+  visibility: Visibility | null;
 }
 
 export interface EditResult {
@@ -79,7 +81,14 @@ export function validateArgs(args: { replace?: string; title?: string; slug?: st
 export function encodePath(rel: string): string;
 export function bodyByteLength(body: string | Uint8Array): number;
 export function uploadFiles(
-  opts: { apiOrigin: string; token: string; files: UploadFile[]; title?: string; slug?: string; replace?: string; abandon?: string } & DomainPreference & { defaultDomainOverride?: string },
+  opts: {
+    apiOrigin: string; token: string; files: UploadFile[]; title?: string; slug?: string;
+    replace?: string; abandon?: string;
+    /** CREATE path only: applied between init and the file PUTs, so the artifact goes live already
+     *  closed. Passing either alongside `replace` THROWS — that artifact is already live, so gate it
+     *  with setVisibility() after this resolves rather than before the upload. */
+    visibility?: Visibility; password?: string;
+  } & DomainPreference & { defaultDomainOverride?: string },
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
 ): Promise<UploadResult>;
 export function editArtifact(
