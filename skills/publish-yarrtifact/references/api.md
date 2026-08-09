@@ -10,7 +10,7 @@ replace, rename, slug-edit, and visibility in the tightening direction only); an
 ## Visibility
 
 `POST /api/artifacts/{artifactId}/visibility` with `{"visibility":"public"|"password"|"private"}`,
-plus `"password":"…"` (min 6 chars) when setting `password`. A token may only move an artifact to an
+plus `"password":"…"` (min 8 chars) when setting `password`. A token may only move an artifact to an
 equal-or-stricter state — `public → password → private`, or a password rotation in place. A request
 that would widen access answers `403 {"error":"token scope"}` naming the dashboard; the row is not
 touched. The password is hashed server-side (PBKDF2) and never readable back.
