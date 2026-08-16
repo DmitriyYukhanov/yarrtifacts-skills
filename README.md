@@ -34,14 +34,14 @@ export YARRTIFACTS_TOKEN=yarr_pat_…
 **Claude Code** (as a plugin):
 
 ```
-/plugin marketplace add DmitriyYukhanov/yarrtifacts-skills
+/plugin marketplace add yarrtifacts/skills
 /plugin install yarrtifacts@yarrtifacts
 ```
 
 **Any skills-compatible agent** via [skills.sh](https://skills.sh):
 
 ```bash
-npx skills add DmitriyYukhanov/yarrtifacts-skills
+npx skills add yarrtifacts/skills
 ```
 
 **Manual** — copy `skills/publish-yarrtifact/` into your agent's skills directory:
